@@ -35,7 +35,7 @@ const Updates: React.FC<UpdatesProps> = ({ onBack }) => {
                 Download the official APK for the best performance and full-screen experience.
             </p>
             <Button 
-                onClick={() => window.open('https://www.mediafire.com/file/aw7qpi2ysxcxreb/BRAINDEFENSE_NEW%2529.apk/file', '_blank')}
+                onClick={() => window.open('https://www.mediafire.com/file/bzafl386wpwwacr/BRAINDEFENSE_%2528NEW%2529.apk/file', '_blank')}
                 className="w-full md:w-auto px-8 py-3 bg-blue-600 border-blue-400 hover:bg-blue-500 shadow-lg"
             >
                 DOWNLOAD v2.7.0 APK

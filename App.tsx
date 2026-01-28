@@ -257,7 +257,6 @@ const App: React.FC = () => {
 
   // --- CENTRAL MAILBOX PROCESSING LOGIC ---
   const processMailboxPayload = (payload: any) => {
-      // NOTE: Processing Disabled visually for user, but logic kept to prevent errors
       if (!payload) return;
 
       // Deduplication Check (Simple)
@@ -266,7 +265,7 @@ const App: React.FC = () => {
           const senderId = payload.sender;
           setGameState(prev => {
               if (prev.friends.includes(senderId) || prev.friendRequests.includes(senderId)) return prev;
-              // setNotification(`NEW FRIEND REQUEST: ${senderId}`); // Muted for Maintenance
+              setNotification(`NEW FRIEND REQUEST: ${senderId}`);
               return {
                   ...prev,
                   friendRequests: [...prev.friendRequests, senderId]
@@ -279,7 +278,7 @@ const App: React.FC = () => {
             const senderId = payload.sender;
             setGameState(prev => {
               if (prev.friends.includes(senderId)) return prev;
-              // setNotification(`${senderId} ACCEPTED YOUR REQUEST!`); // Muted
+              setNotification(`${senderId} ACCEPTED YOUR REQUEST!`);
               return {
                   ...prev,
                   friends: [...prev.friends, senderId]
@@ -290,7 +289,7 @@ const App: React.FC = () => {
       // Handle Request Rejected
       if (payload.type === 'FRIEND_REJECTED' && payload.sender) {
           const senderId = payload.sender;
-          // setNotification(`${senderId} DECLINED YOUR REQUEST.`); // Muted
+          setNotification(`${senderId} DECLINED YOUR REQUEST.`);
       }
 
       // Handle Game Invite
@@ -320,7 +319,7 @@ const App: React.FC = () => {
           
           if (!text) {
               if (!silent) {
-                  // setNotification("NO NEW MESSAGES"); // Muted
+                  setNotification("NO NEW MESSAGES");
               }
               return;
           }
@@ -1173,20 +1172,26 @@ const App: React.FC = () => {
             <Button variant="secondary" onClick={() => setScreen(ScreenState.INVENTORY)}>INVENTORY</Button>
             <Button variant="secondary" onClick={() => setScreen(ScreenState.STORE)}>STORE</Button>
             
-            {/* NEW FRIENDS BUTTON (LOCKED - MAINTENANCE MODE) */}
+            {/* NEW FRIENDS BUTTON */}
             <Button 
-               variant="locked" 
+               variant={gameState.playerId ? "secondary" : "locked"} 
                onClick={() => {
-                 setNotification("FRIEND SYSTEM MAINTENANCE 🚧");
-                 setTimeout(() => setNotification(null), 2000);
+                 if (!gameState.playerId) {
+                    setNotification("LOGIN REQUIRED FOR FRIENDS!");
+                    setTimeout(() => setNotification(null), 2000);
+                    return;
+                 }
+                 setShowFriends(true);
                }} 
-               className="flex items-center justify-center gap-2 relative border-gray-600 text-gray-400 bg-gray-800"
+               className="flex items-center justify-center gap-2 relative"
             >
-               <Users size={24} /> 
+               {gameState.playerId ? <Users size={24} /> : <Lock size={24} />} 
                FRIENDS
-               <span className="absolute -top-2 -right-2 bg-yellow-600 text-black text-[10px] font-bold px-2 py-0.5 rounded border border-yellow-400 animate-pulse">
-                   REPAIRING
-               </span>
+               {gameState.playerId && gameState.friendRequests?.length > 0 && (
+                   <span className="absolute -top-1 -right-1 bg-red-600 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs animate-bounce border-2 border-white">
+                      {gameState.friendRequests.length}
+                   </span>
+               )}
             </Button>
             
             <Button variant="secondary" onClick={() => setScreen(ScreenState.GAME_MODES)}>GAME MODES</Button>
@@ -1387,7 +1392,7 @@ const App: React.FC = () => {
             </div>
         )}
 
-        {/* GAME INVITE OVERLAY (Disabled for maintenance visually, though logic remains) */}
+        {/* GAME INVITE OVERLAY */}
         {incomingInvite && (
             <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[200] bg-indigo-900 border-4 border-cyan-500 rounded-xl p-4 shadow-2xl animate-bounce">
                 <div className="flex flex-col items-center gap-2">
@@ -1416,7 +1421,6 @@ const App: React.FC = () => {
            <RewardSelector onSelect={handleRewardSelection} />
         )}
 
-        {/* FRIEND SYSTEM (DISABLED) - Won't render because showFriends is never set to true */}
         {showFriends && gameState.playerId && (
            <FriendSystem 
               myPlayerId={gameState.playerId}
