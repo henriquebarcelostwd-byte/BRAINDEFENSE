@@ -107,33 +107,33 @@ const GameModes: React.FC<GameModesProps> = ({ onSelectTowerDefense, onSelectMul
               </div>
             </div>
 
-            {/* MULTIPLAYER CARD (NEW) */}
-            <div 
-              onClick={onSelectMultiplayer}
-              className="group relative w-full max-w-md lg:w-[400px] bg-indigo-950 border-4 border-cyan-500 rounded-2xl overflow-hidden cursor-pointer shadow-[0_0_30px_rgba(6,182,212,0.3)] hover:shadow-[0_0_50px_rgba(6,182,212,0.6)] hover:scale-[1.02] transition-all duration-300 flex flex-col"
+            {/* MULTIPLAYER CARD (LOCKED) */}
+            <div
+              className="relative w-full max-w-md lg:w-[400px] bg-gray-900 border-4 border-gray-700 rounded-2xl overflow-hidden shadow-2xl flex flex-col"
             >
-              <div className="absolute inset-0 bg-cyan-500/10 opacity-0 group-hover:opacity-100 transition-opacity z-10 pointer-events-none"></div>
-              
-              <div className="aspect-video w-full bg-black overflow-hidden relative border-b-4 border-cyan-500">
-                <img 
-                  src="https://i.postimg.cc/8zKnj7qM/Chat-GPT-Image-28-de-jan-de-2026-07-14-19.png" 
-                  alt="Multiplayer" 
-                  className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
-                />
-                <div className="absolute top-4 right-4 bg-cyan-600 text-white font-bold px-3 py-1 rounded border-2 border-white shadow-lg flex items-center gap-2 z-20">
-                  <Globe size={16} /> ONLINE
-                </div>
+              <div className="absolute inset-0 bg-black/70 z-30 flex flex-col items-center justify-center pointer-events-none">
+                 <div className="bg-yellow-600 text-black font-chaotic text-3xl px-6 py-2 rounded-lg border-4 border-yellow-400 transform -rotate-12 shadow-[0_0_20px_rgba(234,179,8,0.5)]">
+                    MAINTENANCE
+                 </div>
               </div>
 
-              <div className="p-6 md:p-8 flex flex-col items-center text-center bg-gradient-to-b from-indigo-900 to-black flex-1">
-                <h3 className="text-3xl md:text-4xl font-chaotic text-cyan-400 mb-4 group-hover:text-cyan-300 transition-colors">
+              <div className="aspect-video w-full bg-black overflow-hidden relative border-b-4 border-gray-700 grayscale opacity-50">
+                <img
+                  src="https://i.postimg.cc/8zKnj7qM/Chat-GPT-Image-28-de-jan-de-2026-07-14-19.png"
+                  alt="Multiplayer"
+                  className="w-full h-full object-cover"
+                />
+              </div>
+
+              <div className="p-6 md:p-8 flex flex-col items-center text-center bg-black flex-1">
+                <h3 className="text-3xl md:text-4xl font-chaotic text-gray-500 mb-4">
                   MULTIPLAYER TD
                 </h3>
-                <p className="text-indigo-200 font-sans text-sm md:text-base mb-8 px-2 leading-relaxed">
-                  Team up or battle friends! Find online matches or create a private room to invite your squad.
+                <p className="text-gray-600 font-sans text-sm md:text-base mb-8 px-2 leading-relaxed">
+                  Online services are currently down for upgrades. Please check back later.
                 </p>
-                <Button className="mt-auto w-full bg-cyan-700 border-cyan-900 hover:bg-cyan-600 transition-colors py-4 text-xl">
-                  ENTER LOBBY
+                <Button variant="locked" className="mt-auto w-full py-4 text-xl">
+                  UNAVAILABLE
                 </Button>
               </div>
             </div>

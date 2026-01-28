@@ -257,6 +257,7 @@ const App: React.FC = () => {
 
   // --- CENTRAL MAILBOX PROCESSING LOGIC ---
   const processMailboxPayload = (payload: any) => {
+      // NOTE: Processing Disabled visually for user, but logic kept to prevent errors
       if (!payload) return;
 
       // Deduplication Check (Simple)
@@ -265,7 +266,7 @@ const App: React.FC = () => {
           const senderId = payload.sender;
           setGameState(prev => {
               if (prev.friends.includes(senderId) || prev.friendRequests.includes(senderId)) return prev;
-              setNotification(`NEW FRIEND REQUEST: ${senderId}`);
+              // setNotification(`NEW FRIEND REQUEST: ${senderId}`); // Muted for Maintenance
               return {
                   ...prev,
                   friendRequests: [...prev.friendRequests, senderId]
@@ -278,7 +279,7 @@ const App: React.FC = () => {
             const senderId = payload.sender;
             setGameState(prev => {
               if (prev.friends.includes(senderId)) return prev;
-              setNotification(`${senderId} ACCEPTED YOUR REQUEST!`);
+              // setNotification(`${senderId} ACCEPTED YOUR REQUEST!`); // Muted
               return {
                   ...prev,
                   friends: [...prev.friends, senderId]
@@ -289,7 +290,7 @@ const App: React.FC = () => {
       // Handle Request Rejected
       if (payload.type === 'FRIEND_REJECTED' && payload.sender) {
           const senderId = payload.sender;
-          setNotification(`${senderId} DECLINED YOUR REQUEST.`);
+          // setNotification(`${senderId} DECLINED YOUR REQUEST.`); // Muted
       }
 
       // Handle Game Invite
@@ -297,7 +298,7 @@ const App: React.FC = () => {
           // Avoid spamming notifications for the same invite
           setIncomingInvite(prev => {
               if (prev && prev.matchId === payload.matchId) return prev;
-              console.log("RECEIVED INVITE:", payload);
+              // Muted logic for now, but state updates
               return {
                   matchId: payload.matchId,
                   sender: payload.sender,
@@ -314,24 +315,17 @@ const App: React.FC = () => {
       const topic = `bd_mailbox_v2_${safeId}`;
       
       try {
-          // Fetch raw JSON lines from ntfy
-          // using 'since=10m' to catch recent things.
-          // using 'poll=1' to return immediately with whatever is there.
           const res = await fetch(`https://ntfy.sh/${topic}/json?since=1h&poll=1`);
           const text = await res.text();
           
           if (!text) {
               if (!silent) {
-                  setNotification("NO NEW MESSAGES");
-                  setTimeout(() => setNotification(null), 1000);
+                  // setNotification("NO NEW MESSAGES"); // Muted
               }
               return;
           }
 
-          // ntfy returns newline delimited JSON
           const lines = text.split('\n').filter(line => line.trim() !== '');
-          let processedCount = 0;
-
           lines.forEach(line => {
               try {
                   const data = JSON.parse(line);
@@ -340,25 +334,12 @@ const App: React.FC = () => {
                       if (typeof payload === 'string' && (payload.startsWith('{') || payload.startsWith('['))) {
                           try { payload = JSON.parse(payload); } catch(e) {}
                       }
-                      
                       if (payload && typeof payload === 'object') {
                           processMailboxPayload(payload);
-                          processedCount++;
                       }
                   }
-              } catch(e) {
-                  // ignore bad lines
-              }
+              } catch(e) {}
           });
-          
-          if (!silent) {
-              if (processedCount > 0) {
-                  setNotification("MAILBOX REFRESHED!");
-              } else {
-                  setNotification("NO NEW MESSAGES");
-              }
-              setTimeout(() => setNotification(null), 2000);
-          }
           
       } catch(e) {
           if (!silent) console.error("Manual poll failed", e);
@@ -376,13 +357,9 @@ const App: React.FC = () => {
         mailboxEventSource.current.close();
     }
 
-    console.log(`Listening to mailbox: ${mailboxTopic}`);
-    // REMOVED 'since' parameter from SSE to prevent it from replaying old history and disconnecting.
-    // We rely on 'checkMailboxOnce' to get history on mount/interval.
     const es = new EventSource(`https://ntfy.sh/${mailboxTopic}/sse`);
 
     es.onerror = (e) => {
-        // Silent reconnect
         es.close();
     };
 
@@ -390,7 +367,6 @@ const App: React.FC = () => {
         if (!event.data) return;
         try {
             const data = JSON.parse(event.data);
-            
             if (data.event === 'keepalive') return;
 
             let payload = data;
@@ -418,19 +394,12 @@ const App: React.FC = () => {
   // --- HYBRID CONNECTION EFFECT ---
   useEffect(() => {
     if (gameState.playerId) {
-        // 1. Start SSE for Realtime
         connectToMailbox();
-        
-        // 2. Poll immediately for missed messages
         checkMailboxOnce(true);
-
-        // 3. Set up polling interval (every 5s) as a safety net
         const interval = setInterval(() => {
-            // Check connection health
             if (mailboxEventSource.current && mailboxEventSource.current.readyState === EventSource.CLOSED) {
-                connectToMailbox(); // Reconnect SSE if dead
+                connectToMailbox();
             }
-            // Poll for messages in case SSE missed them
             checkMailboxOnce(true);
         }, 5000);
 
@@ -444,28 +413,18 @@ const App: React.FC = () => {
   // --- ACCOUNT LOGIC ---
   const handleLogin = (username: string, data: GameState) => {
     setCurrentUser(username);
-    
-    // Restore and Sanitize State
     const finalState = restoreState(data);
-    
-    // Ensure Guest also gets an ID if not present. Sanitize Input!
     if (!finalState.playerId) {
         const safeUser = username.toUpperCase().replace(/[^A-Z0-9]/g, '');
         finalState.playerId = `${safeUser}_${Math.floor(Math.random() * 9000) + 1000}`;
     }
-
     setGameState(finalState);
-    setOwnerModeActive(false); // Default to off
-    
-    // Notification for Login
+    setOwnerModeActive(false); 
     setNotification(`WELCOME, ${username.toUpperCase()}!`);
     setTimeout(() => setNotification(null), 3000);
-
     if (!username.startsWith('Guest')) {
       localStorage.setItem('braindefense_last_user', username);
     }
-
-    // ALWAYS Go to Menu after manual login interaction.
     setScreen(ScreenState.MENU);
   };
 
@@ -477,45 +436,33 @@ const App: React.FC = () => {
     setCurrentUser(null);
     setOwnerModeActive(false);
     localStorage.removeItem('braindefense_last_user');
-    
-    // Clear any active game sessions on logout
     localStorage.removeItem('bd_active_session');
     localStorage.removeItem('bd_game_snapshot');
-    
-    // Reset to default
     setGameState(getDefaultState());
-    
     setNotification("LOGGED OUT");
     setTimeout(() => setNotification(null), 2000);
-
-    // Return to mandatory Auth screen
     setScreen(ScreenState.AUTH);
   };
 
   // --- ADMIN POWERS & STATE OVERRIDE ---
   const isOwner = currentUser === OWNER_USER;
-
-  // Use effective state to grant powers ONLY if owner toggle is active
   const effectiveGameState: GameState = (isOwner && ownerModeActive) ? {
     ...gameState,
-    brainCoins: 999999999, // Infinite Coins in Menu
-    unlockedCharacters: Object.keys(TOWERS), // Unlock ALL Characters
-    completedLevels: [1, 2, 3, 4, 5], // Unlock All Levels
+    brainCoins: 999999999, 
+    unlockedCharacters: Object.keys(TOWERS), 
+    completedLevels: [1, 2, 3, 4, 5], 
     hasGamePass: true,
   } : gameState;
 
   // --- FRIEND LOGIC ---
   const handleSendRequest = async (targetId: string): Promise<boolean> => {
-      // Ensure target ID is safe for URL topic
+      // NOTE: Kept for logic, but UI will block access
       const safeTarget = targetId.toUpperCase().replace(/[^A-Z0-9_]/g, '');
-      
-      // Send message to target's mailbox
       const topic = `bd_mailbox_v2_${safeTarget}`;
       const payload = {
           type: 'FRIEND_REQUEST',
-          sender: gameState.playerId // Already safe
+          sender: gameState.playerId 
       };
-
       try {
         await fetch(`https://ntfy.sh/${topic}`, {
             method: 'POST',
@@ -523,46 +470,36 @@ const App: React.FC = () => {
         });
         return true;
       } catch (e) {
-          console.error("Failed to send friend request", e);
           return false;
       }
   };
 
   const handleAcceptRequest = async (senderId: string) => {
       if (!gameState.playerId) return;
-      // 1. Add to my friends
       setGameState(prev => ({
           ...prev,
           friends: [...prev.friends, senderId],
           friendRequests: prev.friendRequests.filter(id => id !== senderId)
       }));
-
-      // 2. Notify sender that I accepted
       const safeSender = senderId.toUpperCase().replace(/[^A-Z0-9_]/g, '');
       const topic = `bd_mailbox_v2_${safeSender}`;
       const payload = {
           type: 'FRIEND_ACCEPTED',
           sender: gameState.playerId
       };
-
       try {
         await fetch(`https://ntfy.sh/${topic}`, {
             method: 'POST',
             body: JSON.stringify(payload)
         });
-      } catch (e) {
-          console.error("Failed to accept request", e);
-      }
+      } catch (e) {}
   };
 
   const handleRejectRequest = async (senderId: string) => {
-      // 1. Remove from my requests locally
       setGameState(prev => ({
           ...prev,
           friendRequests: prev.friendRequests.filter(id => id !== senderId)
       }));
-
-      // 2. Notify sender that I REJECTED them (Critical Fix)
       if (!gameState.playerId) return;
       const safeSender = senderId.toUpperCase().replace(/[^A-Z0-9_]/g, '');
       const topic = `bd_mailbox_v2_${safeSender}`;
@@ -570,15 +507,12 @@ const App: React.FC = () => {
           type: 'FRIEND_REJECTED',
           sender: gameState.playerId
       };
-
       try {
         await fetch(`https://ntfy.sh/${topic}`, {
             method: 'POST',
             body: JSON.stringify(payload)
         });
-      } catch (e) {
-          console.error("Failed to send reject signal", e);
-      }
+      } catch (e) {}
   };
 
   const handleRemoveFriend = (id: string) => {
@@ -591,64 +525,49 @@ const App: React.FC = () => {
   // --- GAME INVITE LOGIC ---
   const handleInviteToGame = async (friendId: string) => {
       if (!gameState.playerId) return;
-      
       const matchId = `bd_match_${gameState.playerId}_${friendId}_${Date.now()}`;
-      
-      // 1. Send invite to friend's mailbox
       const safeFriend = friendId.toUpperCase().replace(/[^A-Z0-9_]/g, '');
       const topic = `bd_mailbox_v2_${safeFriend}`;
       const payload = {
           type: 'GAME_INVITE',
           sender: gameState.playerId,
           matchId: matchId,
-          level: 1 // Default to Level 1 for simplicity, or could pass selected
+          level: 1 
       };
-
       try {
           await fetch(`https://ntfy.sh/${topic}`, {
               method: 'POST',
               body: JSON.stringify(payload)
           });
-          
-          // 2. Transition Host to Lobby Waiting State
-          setShowFriends(false); // Close modal
+          setShowFriends(false); 
           setActiveInviteMatchId(matchId);
           setScreen(ScreenState.MULTIPLAYER_LOBBY);
-          
       } catch (e) {
-          console.error("Failed to send game invite", e);
           setNotification("FAILED TO SEND INVITE");
       }
   };
 
   const acceptIncomingInvite = async () => {
       if (!incomingInvite || !gameState.playerId) return;
-      
       const payload = {
           type: 'MATCH_ACCEPT',
           sender: gameState.playerId,
           level: incomingInvite.level,
-          completedLevels: effectiveGameState.completedLevels // SEND PROGRESS SO HOST KNOWS
+          completedLevels: effectiveGameState.completedLevels 
       };
-      
       try {
           await fetch(`https://ntfy.sh/${incomingInvite.matchId}`, {
               method: 'POST',
               body: JSON.stringify(payload)
           });
-          
           setNotification("WAITING FOR HOST TO START...");
-          setIncomingInvite(null); // Clear overlay
-          
-          // Listen for HOST_START_CONFIRM on the match channel
+          setIncomingInvite(null); 
           if (inviteMatchListenerRef.current) inviteMatchListenerRef.current.close();
           const es = new EventSource(`https://ntfy.sh/${incomingInvite.matchId}/sse?since=10m&t=${Date.now()}`);
-          
           es.onmessage = (event) => {
               try {
                   const data = JSON.parse(event.data);
                   const msg = typeof data === 'string' ? JSON.parse(data) : data.message ? JSON.parse(data.message) : data;
-                  
                   if (msg.type === 'HOST_START_CONFIRM' && msg.seed) {
                       es.close();
                       startMultiplayerLevel(msg.level, incomingInvite.matchId, 'CLIENT', msg.seed);
@@ -656,7 +575,6 @@ const App: React.FC = () => {
               } catch(e) {}
           };
           inviteMatchListenerRef.current = es;
-
       } catch (e) {
           console.error("Failed to accept invite", e);
       }
@@ -694,29 +612,19 @@ const App: React.FC = () => {
           equippedCharacters: currentEquipped
        }));
     } else {
-       // Save to generic slot (Autosave)
        try {
            localStorage.setItem('braindefense_save', JSON.stringify(gameState));
-       } catch (e) {
-           console.error("Failed to autosave (likely full)", e);
-       }
+       } catch (e) {}
        
-       // If logged in as REGISTERED user, update User Database
-       // GUESTS do not save to 'braindefense_users', only 'braindefense_save'
        if (currentUser && currentUser !== OWNER_USER && !currentUser.startsWith('Guest')) {
-         // CRITICAL FIX: Only save if we have a valid ID. 
-         // This prevents saving the 'default state' (null ID) during the logout race condition.
          if (gameState.playerId) {
              try {
                  const storedUsers = localStorage.getItem('braindefense_users');
                  const users = storedUsers ? JSON.parse(storedUsers) : {};
-                 // Ensure user record exists
                  if (!users[currentUser]) users[currentUser] = { data: gameState };
-                 
                  users[currentUser].data = gameState;
                  localStorage.setItem('braindefense_users', JSON.stringify(users));
              } catch(e) {
-                 console.error("Failed to sync user data", e);
                  if ((e as any).name === 'QuotaExceededError') {
                     setNotification("SAVE FAILED: STORAGE FULL! TRY A SMALLER IMAGE.");
                     setTimeout(() => setNotification(null), 5000);
@@ -733,13 +641,10 @@ const App: React.FC = () => {
       ...prev,
       brainCoins: prev.firstTime ? 100 : prev.brainCoins
     }));
-
     if (gameState.firstTime) {
       setGameState(prev => ({ ...prev, firstTime: false }));
     }
     checkDailyLogin();
-    
-    // Check Auto Login from Synchronous State
     if (currentUser && !localStorage.getItem('bd_active_session')) {
         setScreen(ScreenState.MENU);
     } else if (!currentUser) {
@@ -749,12 +654,10 @@ const App: React.FC = () => {
 
   const checkDailyLogin = () => {
     const today = new Date().toDateString();
-    
     setGameState(prev => {
       if (prev.lastLoginDate !== today) {
         const yesterday = new Date();
         yesterday.setDate(yesterday.getDate() - 1);
-        
         let newStreak = prev.loginStreak;
         if (prev.lastLoginDate === yesterday.toDateString()) {
           newStreak += 1;
@@ -764,7 +667,6 @@ const App: React.FC = () => {
            }
         }
         if (newStreak > 6) newStreak = 1; 
-
         return {
           ...prev,
           lastLoginDate: today,
@@ -774,10 +676,8 @@ const App: React.FC = () => {
       }
       return prev;
     });
-
     setTimeout(() => {
         const stored = JSON.parse(localStorage.getItem('braindefense_save') || '{}');
-        // Only show daily rewards if NOT recovering a session
         if (!stored.hasClaimedDaily && !localStorage.getItem('bd_active_session')) {
             setShowDailyRewards(true);
         }
@@ -789,7 +689,6 @@ const App: React.FC = () => {
     let coinsToAdd = 0;
     let newCharacter = null;
     let gamePass = false;
-
     switch(streak) {
       case 1: coinsToAdd = 10; break;
       case 2: coinsToAdd = 15; break;
@@ -799,7 +698,6 @@ const App: React.FC = () => {
       case 6: coinsToAdd = 50; gamePass = true; break;
       default: coinsToAdd = 10;
     }
-
     setGameState(prev => ({
       ...prev,
       brainCoins: prev.brainCoins + coinsToAdd,
@@ -809,7 +707,6 @@ const App: React.FC = () => {
       hasGamePass: gamePass || prev.hasGamePass,
       hasClaimedDaily: true
     }));
-
     setNotification(`CLAIMED: ${coinsToAdd > 0 ? coinsToAdd + ' BC' : ''} ${newCharacter ? '+ SAPINI' : ''} ${gamePass ? '+ GAMEPASS' : ''}`);
     setTimeout(() => setNotification(null), 3000);
     setShowDailyRewards(false);
@@ -817,7 +714,6 @@ const App: React.FC = () => {
 
   // --- Actions ---
   const handlePurchase = (id: string, cost: number) => {
-    // Owner logic overrides cost check technically, but UI uses effectiveState
     if (effectiveGameState.brainCoins >= cost && !effectiveGameState.unlockedCharacters.includes(id)) {
       setGameState(prev => ({
         ...prev,
@@ -876,17 +772,14 @@ const App: React.FC = () => {
     let coins = 0;
     let unlockId: string | null = null;
     let unlockStoreAccessId: string | null = null;
-
     if (choice === 'TOILETROT') unlockId = 'TOILETROT';
     else if (choice === 'COINS') coins = 200;
     else if (choice === 'CHOCOLATINI_UNLOCK') unlockStoreAccessId = 'CHOCOLATINI_STORE_ACCESS';
-
     setGameState(prev => {
        const newUnlocked = [...prev.unlockedCharacters];
        const newRedeemed = [...prev.redeemedCodes, code];
        if (unlockId && !newUnlocked.includes(unlockId)) newUnlocked.push(unlockId);
        if (unlockStoreAccessId && !newRedeemed.includes(unlockStoreAccessId)) newRedeemed.push(unlockStoreAccessId);
-
        return {
          ...prev,
          brainCoins: prev.brainCoins + coins,
@@ -894,7 +787,6 @@ const App: React.FC = () => {
          redeemedCodes: newRedeemed
        };
     });
-
     setShowRewardSelector(false);
     setNotification("REWARD CLAIMED!");
     setTimeout(() => setNotification(null), 2000);
@@ -930,14 +822,11 @@ const App: React.FC = () => {
     const startIndex = (levelId - 1) * 3;
     setCurrentStageIndex(startIndex);
     setMultiplayerMatch({ isActive: false, matchId: '', role: 'HOST', seed: Date.now() }); 
-    
-    // REGISTER ACTIVE SESSION (SINGLEPLAYER)
     localStorage.setItem('bd_active_session', JSON.stringify({
         stageIndex: startIndex,
         isMultiplayer: false,
         multiplayerState: null
     }));
-
     setScreen(ScreenState.GAME);
   };
 
@@ -950,22 +839,17 @@ const App: React.FC = () => {
     setCurrentStageIndex(startIndex);
     const mpState: MultiplayerMatchState = { isActive: true, matchId, role, seed };
     setMultiplayerMatch(mpState);
-    
-    // REGISTER ACTIVE SESSION (MULTIPLAYER)
     localStorage.setItem('bd_active_session', JSON.stringify({
         stageIndex: startIndex,
         isMultiplayer: true,
         multiplayerState: mpState
     }));
-
     setScreen(ScreenState.GAME);
   };
 
   const handleStageComplete = (win: boolean) => {
-    // Clear Session Logic
     localStorage.removeItem('bd_active_session');
     localStorage.removeItem('bd_game_snapshot');
-
     if (win) {
       setGameState(prev => ({ ...prev, brainCoins: prev.brainCoins + 20 }));
       if (currentStageIndex === 2) {
@@ -1062,11 +946,10 @@ const App: React.FC = () => {
   let gameLevelConfig: LevelConfig | undefined = undefined;
   if (currentStageIndex !== null) {
       gameLevelConfig = STAGES[currentStageIndex];
-      // INJECT INFINITE MONEY FOR OWNER
       if (isOwner && ownerModeActive && gameLevelConfig) {
           gameLevelConfig = {
               ...gameLevelConfig,
-              startingMoney: 9999999 // Infinite Coins for Match
+              startingMoney: 9999999 
           };
       }
   }
@@ -1290,26 +1173,20 @@ const App: React.FC = () => {
             <Button variant="secondary" onClick={() => setScreen(ScreenState.INVENTORY)}>INVENTORY</Button>
             <Button variant="secondary" onClick={() => setScreen(ScreenState.STORE)}>STORE</Button>
             
-            {/* NEW FRIENDS BUTTON (LOCKED IF NO ID) */}
+            {/* NEW FRIENDS BUTTON (LOCKED - MAINTENANCE MODE) */}
             <Button 
-               variant={gameState.playerId ? "secondary" : "locked"} 
+               variant="locked" 
                onClick={() => {
-                 if (!gameState.playerId) {
-                    setNotification("LOGIN REQUIRED FOR FRIENDS!");
-                    setTimeout(() => setNotification(null), 2000);
-                    return;
-                 }
-                 setShowFriends(true);
+                 setNotification("FRIEND SYSTEM MAINTENANCE 🚧");
+                 setTimeout(() => setNotification(null), 2000);
                }} 
-               className="flex items-center justify-center gap-2 relative"
+               className="flex items-center justify-center gap-2 relative border-gray-600 text-gray-400 bg-gray-800"
             >
-               {gameState.playerId ? <Users size={24} /> : <Lock size={24} />} 
+               <Users size={24} /> 
                FRIENDS
-               {gameState.playerId && gameState.friendRequests?.length > 0 && (
-                   <span className="absolute -top-1 -right-1 bg-red-600 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs animate-bounce border-2 border-white">
-                      {gameState.friendRequests.length}
-                   </span>
-               )}
+               <span className="absolute -top-2 -right-2 bg-yellow-600 text-black text-[10px] font-bold px-2 py-0.5 rounded border border-yellow-400 animate-pulse">
+                   REPAIRING
+               </span>
             </Button>
             
             <Button variant="secondary" onClick={() => setScreen(ScreenState.GAME_MODES)}>GAME MODES</Button>
@@ -1510,7 +1387,7 @@ const App: React.FC = () => {
             </div>
         )}
 
-        {/* GAME INVITE OVERLAY */}
+        {/* GAME INVITE OVERLAY (Disabled for maintenance visually, though logic remains) */}
         {incomingInvite && (
             <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[200] bg-indigo-900 border-4 border-cyan-500 rounded-xl p-4 shadow-2xl animate-bounce">
                 <div className="flex flex-col items-center gap-2">
@@ -1539,6 +1416,7 @@ const App: React.FC = () => {
            <RewardSelector onSelect={handleRewardSelection} />
         )}
 
+        {/* FRIEND SYSTEM (DISABLED) - Won't render because showFriends is never set to true */}
         {showFriends && gameState.playerId && (
            <FriendSystem 
               myPlayerId={gameState.playerId}
