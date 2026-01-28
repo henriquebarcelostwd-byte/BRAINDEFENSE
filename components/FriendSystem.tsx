@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Users, MessageSquare, Copy, UserPlus, X, Send, ChevronLeft, Mail, Check, Ban, Gamepad2, Loader2, RefreshCw, Search, Shield, Wifi } from 'lucide-react';
+import { Users, MessageSquare, Copy, UserPlus, X, Send, ChevronLeft, Mail, Check, Ban, Gamepad2, Loader2, RefreshCw, Search, Shield, Wifi, WifiOff } from 'lucide-react';
 
 interface FriendSystemProps {
   myPlayerId: string;
@@ -13,6 +13,7 @@ interface FriendSystemProps {
   onInviteToGame: (friendId: string) => void; 
   onClose: () => void;
   onRefresh?: () => void; 
+  isOnline?: boolean; // New prop for status
 }
 
 interface ChatMessage {
@@ -31,7 +32,8 @@ const FriendSystem: React.FC<FriendSystemProps> = ({
   onRemoveFriend, 
   onInviteToGame,
   onClose,
-  onRefresh
+  onRefresh,
+  isOnline = false
 }) => {
   // Navigation State
   const [activeTab, setActiveTab] = useState<'FRIENDS' | 'REQUESTS' | 'ADD'>('FRIENDS');
@@ -194,11 +196,14 @@ const FriendSystem: React.FC<FriendSystemProps> = ({
                    <div className="w-10 h-10 rounded-lg bg-cyan-900/30 border border-cyan-500/50 flex items-center justify-center relative">
                        <Shield className="text-cyan-400" size={20} />
                        {/* Connection Indicator */}
-                       <div className="absolute -bottom-1 -right-1 w-3 h-3 bg-green-500 rounded-full border-2 border-black animate-pulse shadow-[0_0_5px_lime]"></div>
+                       <div className={`absolute -bottom-1 -right-1 w-3 h-3 rounded-full border-2 border-black animate-pulse shadow-[0_0_5px_currentColor] ${isOnline ? 'bg-green-500 text-green-500' : 'bg-red-500 text-red-500'}`}></div>
                    </div>
                    <div>
                        <div className="text-xs text-cyan-500 font-mono tracking-widest flex items-center gap-1">
-                          SOCIAL UPLINK <span className="text-green-500 text-[9px] border border-green-500 px-1 rounded">ONLINE</span>
+                          SOCIAL UPLINK 
+                          <span className={`text-[9px] border px-1 rounded flex items-center gap-1 ${isOnline ? 'text-green-500 border-green-500' : 'text-red-500 border-red-500'}`}>
+                              {isOnline ? 'ONLINE' : 'OFFLINE'}
+                          </span>
                        </div>
                        <div className="text-white font-chaotic text-xl leading-none">NETWORK</div>
                    </div>
@@ -233,8 +238,11 @@ const FriendSystem: React.FC<FriendSystemProps> = ({
                     {/* Refresh Header */}
                     <div className="px-4 flex justify-between items-center mb-2">
                         <span className="text-xs text-gray-500 font-bold uppercase tracking-widest">CONNECTIONS ({friends.length})</span>
-                        <button onClick={() => { if(onRefresh) onRefresh(); showToast("REFRESHING NETWORK...", 'info'); }} className="text-gray-500 hover:text-white transition-colors">
-                            <RefreshCw size={14} />
+                        <button 
+                            onClick={() => { if(onRefresh) onRefresh(); showToast("CHECKING NETWORK...", 'info'); }} 
+                            className="flex items-center gap-1 text-gray-500 hover:text-white transition-colors bg-white/5 px-2 py-1 rounded text-[10px]"
+                        >
+                            <RefreshCw size={12} className={!isOnline ? "animate-spin" : ""} /> FORCE SYNC
                         </button>
                     </div>
 
@@ -297,6 +305,9 @@ const FriendSystem: React.FC<FriendSystemProps> = ({
                              <div className="flex flex-col items-center justify-center h-full text-gray-600">
                                 <Mail size={48} className="mb-2 opacity-20" />
                                 <p className="text-sm font-mono">MAILBOX EMPTY</p>
+                                <button onClick={() => { if(onRefresh) onRefresh(); }} className="mt-4 text-xs text-blue-400 hover:underline">
+                                    Check for new messages
+                                </button>
                              </div>
                         ) : (
                             friendRequests.map(reqId => (

@@ -166,6 +166,9 @@ const App: React.FC = () => {
   const [ownerModeActive, setOwnerModeActive] = useState(false);
   const [showFriends, setShowFriends] = useState(false);
   
+  // Network Status
+  const [isOnline, setIsOnline] = useState(false);
+
   // Multiplayer State
   const [multiplayerMatch, setMultiplayerMatch] = useState<MultiplayerMatchState>({
       isActive: false,
@@ -318,12 +321,13 @@ const App: React.FC = () => {
   const checkMailboxOnce = async (silent = false) => {
       if (!gameState.playerId) return;
       const safeId = gameState.playerId.toUpperCase().replace(/[^A-Z0-9_]/g, '');
-      const topic = `bd_mailbox_v2_${safeId}`;
+      const topic = `bd_net_v3_${safeId}`;
       
       try {
-          // IMPORTANT: Removed 'poll=1' to prevent blocking connection on multiple tabs/intervals.
-          // This makes it a quick check for existing history.
-          const res = await fetch(`https://ntfy.sh/${topic}/json?since=1h`);
+          // Cache busting with time + no-store to force real fetch
+          const res = await fetch(`https://ntfy.sh/${topic}/json?since=1h&t=${Date.now()}`, {
+              cache: 'no-store'
+          });
           const text = await res.text();
           
           if (!text) {
@@ -332,6 +336,7 @@ const App: React.FC = () => {
           }
 
           const lines = text.split('\n').filter(line => line.trim() !== '');
+          let found = 0;
           lines.forEach(line => {
               try {
                   const data = JSON.parse(line);
@@ -342,10 +347,14 @@ const App: React.FC = () => {
                       }
                       if (payload && typeof payload === 'object') {
                           processMailboxPayload(payload);
+                          found++;
                       }
                   }
               } catch(e) {}
           });
+          
+          if (!silent && found > 0) setNotification(`${found} MESSAGES SYNCED`);
+          else if (!silent) setNotification("NO NEW MESSAGES");
           
       } catch(e) {
           if (!silent) console.error("Manual poll failed", e);
@@ -357,7 +366,7 @@ const App: React.FC = () => {
     if (!gameState.playerId) return;
 
     const safeId = gameState.playerId.toUpperCase().replace(/[^A-Z0-9_]/g, '');
-    const mailboxTopic = `bd_mailbox_v2_${safeId}`;
+    const mailboxTopic = `bd_net_v3_${safeId}`;
     
     if (mailboxEventSource.current) {
         mailboxEventSource.current.close();
@@ -366,9 +375,14 @@ const App: React.FC = () => {
     console.log(`Subscribing to mailbox: ${mailboxTopic}`);
     const es = new EventSource(`https://ntfy.sh/${mailboxTopic}/sse`);
 
+    es.onopen = () => {
+        setIsOnline(true);
+        console.log("Mailbox Connected");
+    };
+
     es.onerror = (e) => {
-        // es.close(); // Don't close on error, let it reconnect naturally
-        console.warn("SSE Connection lost, retrying...");
+        setIsOnline(false);
+        // Don't close immediately, let it try to reconnect or let the interval handle it
     };
 
     es.onmessage = (event) => {
@@ -404,13 +418,17 @@ const App: React.FC = () => {
     if (gameState.playerId) {
         connectToMailbox();
         checkMailboxOnce(true);
-        // Interval for redundancy, but safe now without poll=1
+        
+        // Reconnect Interval (Auto-Heal)
         const interval = setInterval(() => {
-            if (mailboxEventSource.current && mailboxEventSource.current.readyState === EventSource.CLOSED) {
+            if (!mailboxEventSource.current || mailboxEventSource.current.readyState === EventSource.CLOSED) {
+                console.log("Connection lost, reconnecting...");
+                setIsOnline(false);
                 connectToMailbox();
+            } else if (mailboxEventSource.current.readyState === EventSource.OPEN) {
+                setIsOnline(true);
             }
-            checkMailboxOnce(true);
-        }, 5000);
+        }, 2000); // Check every 2 seconds
 
         return () => {
             if (mailboxEventSource.current) mailboxEventSource.current.close();
@@ -467,7 +485,7 @@ const App: React.FC = () => {
   const handleSendRequest = async (targetId: string): Promise<boolean> => {
       // NOTE: Kept for logic, but UI will block access
       const safeTarget = targetId.toUpperCase().replace(/[^A-Z0-9_]/g, '');
-      const topic = `bd_mailbox_v2_${safeTarget}`;
+      const topic = `bd_net_v3_${safeTarget}`;
       const payload = {
           type: 'FRIEND_REQUEST',
           sender: gameState.playerId 
@@ -495,7 +513,7 @@ const App: React.FC = () => {
           friendRequests: prev.friendRequests.filter(id => id !== senderId)
       }));
       const safeSender = senderId.toUpperCase().replace(/[^A-Z0-9_]/g, '');
-      const topic = `bd_mailbox_v2_${safeSender}`;
+      const topic = `bd_net_v3_${safeSender}`;
       const payload = {
           type: 'FRIEND_ACCEPTED',
           sender: gameState.playerId
@@ -515,7 +533,7 @@ const App: React.FC = () => {
       }));
       if (!gameState.playerId) return;
       const safeSender = senderId.toUpperCase().replace(/[^A-Z0-9_]/g, '');
-      const topic = `bd_mailbox_v2_${safeSender}`;
+      const topic = `bd_net_v3_${safeSender}`;
       const payload = {
           type: 'FRIEND_REJECTED',
           sender: gameState.playerId
@@ -540,7 +558,7 @@ const App: React.FC = () => {
       if (!gameState.playerId) return;
       const matchId = `bd_match_${gameState.playerId}_${friendId}_${Date.now()}`;
       const safeFriend = friendId.toUpperCase().replace(/[^A-Z0-9_]/g, '');
-      const topic = `bd_mailbox_v2_${safeFriend}`;
+      const topic = `bd_net_v3_${safeFriend}`;
       const payload = {
           type: 'GAME_INVITE',
           sender: gameState.playerId,
@@ -1447,6 +1465,7 @@ const App: React.FC = () => {
               onInviteToGame={handleInviteToGame}
               onClose={() => setShowFriends(false)}
               onRefresh={checkMailboxOnce}
+              isOnline={isOnline}
            />
         )}
     </div>
