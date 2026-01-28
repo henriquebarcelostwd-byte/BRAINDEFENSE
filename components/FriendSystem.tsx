@@ -191,11 +191,15 @@ const FriendSystem: React.FC<FriendSystemProps> = ({
                </div>
            ) : (
                <div className="flex items-center gap-3">
-                   <div className="w-10 h-10 rounded-lg bg-cyan-900/30 border border-cyan-500/50 flex items-center justify-center">
+                   <div className="w-10 h-10 rounded-lg bg-cyan-900/30 border border-cyan-500/50 flex items-center justify-center relative">
                        <Shield className="text-cyan-400" size={20} />
+                       {/* Connection Indicator */}
+                       <div className="absolute -bottom-1 -right-1 w-3 h-3 bg-green-500 rounded-full border-2 border-black animate-pulse shadow-[0_0_5px_lime]"></div>
                    </div>
                    <div>
-                       <div className="text-xs text-cyan-500 font-mono tracking-widest">SOCIAL UPLINK</div>
+                       <div className="text-xs text-cyan-500 font-mono tracking-widest flex items-center gap-1">
+                          SOCIAL UPLINK <span className="text-green-500 text-[9px] border border-green-500 px-1 rounded">ONLINE</span>
+                       </div>
                        <div className="text-white font-chaotic text-xl leading-none">NETWORK</div>
                    </div>
                </div>

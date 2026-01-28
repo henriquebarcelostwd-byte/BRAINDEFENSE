@@ -117,7 +117,6 @@ const restoreState = (parsed: any): GameState => {
 
 const getInitialGameState = (): GameState => {
     // 1. PRIORITY: Try to load specific user data if auto-login is pending
-    // This fixes the issue where generic save might be from Guest but we are logging in as User
     const lastUser = localStorage.getItem('braindefense_last_user');
     if (lastUser) {
         try {
@@ -222,7 +221,6 @@ const App: React.FC = () => {
   // --- SESSION RECOVERY EFFECT ---
   useEffect(() => {
     // Session Recovery (Check if user was in a game)
-    // Delay slightly to ensure gameState is ready
     setTimeout(() => {
         const activeSession = localStorage.getItem('bd_active_session');
         if (activeSession) {
@@ -258,6 +256,8 @@ const App: React.FC = () => {
   // --- CENTRAL MAILBOX PROCESSING LOGIC ---
   const processMailboxPayload = (payload: any) => {
       if (!payload) return;
+      
+      console.log("Processing Mailbox Payload:", payload);
 
       // Deduplication Check (Simple)
       // For Friend Requests, we check if ID is already in requests or friends
@@ -265,7 +265,10 @@ const App: React.FC = () => {
           const senderId = payload.sender;
           setGameState(prev => {
               if (prev.friends.includes(senderId) || prev.friendRequests.includes(senderId)) return prev;
+              
               setNotification(`NEW FRIEND REQUEST: ${senderId}`);
+              setTimeout(() => setNotification(null), 5000);
+              
               return {
                   ...prev,
                   friendRequests: [...prev.friendRequests, senderId]
@@ -278,7 +281,10 @@ const App: React.FC = () => {
             const senderId = payload.sender;
             setGameState(prev => {
               if (prev.friends.includes(senderId)) return prev;
+              
               setNotification(`${senderId} ACCEPTED YOUR REQUEST!`);
+              setTimeout(() => setNotification(null), 5000);
+              
               return {
                   ...prev,
                   friends: [...prev.friends, senderId]
@@ -290,6 +296,7 @@ const App: React.FC = () => {
       if (payload.type === 'FRIEND_REJECTED' && payload.sender) {
           const senderId = payload.sender;
           setNotification(`${senderId} DECLINED YOUR REQUEST.`);
+          setTimeout(() => setNotification(null), 3000);
       }
 
       // Handle Game Invite
@@ -314,13 +321,13 @@ const App: React.FC = () => {
       const topic = `bd_mailbox_v2_${safeId}`;
       
       try {
-          const res = await fetch(`https://ntfy.sh/${topic}/json?since=1h&poll=1`);
+          // IMPORTANT: Removed 'poll=1' to prevent blocking connection on multiple tabs/intervals.
+          // This makes it a quick check for existing history.
+          const res = await fetch(`https://ntfy.sh/${topic}/json?since=1h`);
           const text = await res.text();
           
           if (!text) {
-              if (!silent) {
-                  setNotification("NO NEW MESSAGES");
-              }
+              if (!silent) setNotification("NO NEW MESSAGES");
               return;
           }
 
@@ -355,11 +362,13 @@ const App: React.FC = () => {
     if (mailboxEventSource.current) {
         mailboxEventSource.current.close();
     }
-
+    
+    console.log(`Subscribing to mailbox: ${mailboxTopic}`);
     const es = new EventSource(`https://ntfy.sh/${mailboxTopic}/sse`);
 
     es.onerror = (e) => {
-        es.close();
+        // es.close(); // Don't close on error, let it reconnect naturally
+        console.warn("SSE Connection lost, retrying...");
     };
 
     es.onmessage = (event) => {
@@ -395,6 +404,7 @@ const App: React.FC = () => {
     if (gameState.playerId) {
         connectToMailbox();
         checkMailboxOnce(true);
+        // Interval for redundancy, but safe now without poll=1
         const interval = setInterval(() => {
             if (mailboxEventSource.current && mailboxEventSource.current.readyState === EventSource.CLOSED) {
                 connectToMailbox();
@@ -462,6 +472,9 @@ const App: React.FC = () => {
           type: 'FRIEND_REQUEST',
           sender: gameState.playerId 
       };
+      
+      console.log(`Sending Friend Request to ${topic}`, payload);
+
       try {
         await fetch(`https://ntfy.sh/${topic}`, {
             method: 'POST',
@@ -469,6 +482,7 @@ const App: React.FC = () => {
         });
         return true;
       } catch (e) {
+          console.error("Send Request Error:", e);
           return false;
       }
   };
