@@ -556,16 +556,16 @@ const GameEngine: React.FC<GameEngineProps> = ({ stageConfig, stageNumber, total
             ctx.save();
             ctx.font = '24px Bangers';
             ctx.textAlign = 'center';
-            // HOST IS ALWAYS LEFT (YOUR ZONE if Host, ALLY ZONE if Client)
-            // CLIENT IS ALWAYS RIGHT (ALLY ZONE if Host, YOUR ZONE if Client)
+            // HOST = RIGHT SIDE (x > w/2)
+            // CLIENT = LEFT SIDE (x < w/2)
             
-            // Left Side Label
-            ctx.fillStyle = isHost ? 'rgba(100, 255, 100, 0.6)' : 'rgba(100, 200, 255, 0.6)';
-            ctx.fillText(isHost ? "YOUR ZONE" : "ALLY ZONE", w / 4, 40);
+            // Left Side Label (CLIENT ZONE)
+            ctx.fillStyle = isHost ? 'rgba(100, 200, 255, 0.6)' : 'rgba(100, 255, 100, 0.6)'; // Blue if Host sees Ally, Green if Client sees Self
+            ctx.fillText(isHost ? "ALLY ZONE" : "YOUR ZONE", w / 4, 40);
             
-            // Right Side Label
-            ctx.fillStyle = isHost ? 'rgba(100, 200, 255, 0.6)' : 'rgba(100, 255, 100, 0.6)';
-            ctx.fillText(isHost ? "ALLY ZONE" : "YOUR ZONE", (w * 3) / 4, 40);
+            // Right Side Label (HOST ZONE)
+            ctx.fillStyle = isHost ? 'rgba(100, 255, 100, 0.6)' : 'rgba(100, 200, 255, 0.6)'; // Green if Host sees Self, Blue if Client sees Ally
+            ctx.fillText(isHost ? "YOUR ZONE" : "ALLY ZONE", (w * 3) / 4, 40);
             
             ctx.restore();
         }
@@ -865,16 +865,17 @@ const GameEngine: React.FC<GameEngineProps> = ({ stageConfig, stageNumber, total
     const h = rect.height;
 
     // Multiplayer Restriction: 
-    // Host = Left Side (0 to w/2)
-    // Client = Right Side (w/2 to w)
+    // Host = RIGHT Side (w/2 to w)
+    // Client = LEFT Side (0 to w/2)
     if (isMultiplayer) {
         const isLeft = x < w / 2;
-        if (isHost && !isLeft) {
-            alert("HOST DEFENDS THE LEFT SIDE!");
+        
+        if (isHost && isLeft) {
+            alert("HOST DEFENDS THE RIGHT SIDE!");
             return;
         }
-        if (!isHost && isLeft) {
-            alert("CLIENT DEFENDS THE RIGHT SIDE!");
+        if (!isHost && !isLeft) {
+            alert("CLIENT DEFENDS THE LEFT SIDE!");
             return;
         }
     }

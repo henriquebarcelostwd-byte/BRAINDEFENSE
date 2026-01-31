@@ -48,7 +48,7 @@ const Updates: React.FC<UpdatesProps> = ({ onBack }) => {
              <Sparkles className="text-yellow-400" /> CURRENT VERSION (v2.7.0)
            </h3>
            <p className="text-gray-200 font-mono text-lg leading-relaxed mb-4 border-l-4 border-green-700 pl-4 py-2 bg-green-900/20">
-             "Welcome to <span className="text-green-400 font-bold">BRAINDEFENSE</span>. In this update I put the <span className="text-blue-400 font-bold">friends chat system</span> and the new mode <span className="text-purple-400 font-bold">TOWER DEFENSE MULTIPLAYER</span>."
+             "Welcome to <span className="text-green-400 font-bold">BRAINDEFENSE</span>. This update brings a complete <span className="text-blue-400 font-bold">Friend & Private Chat System</span>. We added a friends mailbox so that if someone sends a friend request, you can see it and accept or reject it, and added a friends chat feature."
            </p>
            
            <div className="grid grid-cols-2 gap-4 mt-4">
@@ -60,6 +60,9 @@ const Updates: React.FC<UpdatesProps> = ({ onBack }) => {
               </div>
               <div className="bg-black/40 p-3 rounded border border-gray-600 flex items-center gap-2 text-sm text-gray-300">
                  <div className="w-2 h-2 bg-green-500 rounded-full"></div> Persistent Accounts
+              </div>
+              <div className="bg-black/40 p-3 rounded border border-gray-600 flex items-center gap-2 text-sm text-gray-300 font-bold text-yellow-400">
+                 <div className="w-2 h-2 bg-yellow-500 rounded-full"></div> GUESTS CAN NOW ADD FRIENDS!
               </div>
            </div>
         </div>

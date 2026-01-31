@@ -17,7 +17,7 @@ import FriendSystem from './components/FriendSystem';
 import MultiplayerLobby from './components/MultiplayerLobby';
 import { GameState, ScreenState, MultiplayerMatchState, LevelConfig } from './types';
 import { TOWERS, STAGES, IMAGES } from './constants';
-import { Save, Sparkles, ChevronDown, ChevronUp, Gift, Menu, Copy, Download, Upload, RefreshCw, X, ShieldCheck, Key, User, ArrowLeft, Megaphone, Zap, Users, Lock, Gamepad2, Check, Bell } from 'lucide-react';
+import { Save, Sparkles, ChevronDown, ChevronUp, Gift, Menu, Copy, Download, Upload, RefreshCw, X, ShieldCheck, Key, User, ArrowLeft, Megaphone, Zap, Users, Lock, Gamepad2, Check, Bell, Sword, Loader2 } from 'lucide-react';
 
 // --- Simple Encryption Helpers ---
 const simpleEncrypt = (text: string, key: string) => {
@@ -76,6 +76,7 @@ const getDefaultState = (): GameState => ({
   temporaryUnlocks: {},
   friends: [],
   friendRequests: [],
+  chats: {},
   nickname: '',
   profilePicture: ''
 });
@@ -110,6 +111,7 @@ const restoreState = (parsed: any): GameState => {
       friends: Array.isArray(parsed.friends) ? parsed.friends : [],
       friendRequests: Array.isArray(parsed.friendRequests) ? parsed.friendRequests : [],
       temporaryUnlocks: parsed.temporaryUnlocks || {},
+      chats: parsed.chats || {},
       nickname: parsed.nickname ?? '',
       profilePicture: parsed.profilePicture ?? ''
     };
@@ -121,9 +123,12 @@ const getInitialGameState = (): GameState => {
     if (lastUser) {
         try {
             const users = JSON.parse(localStorage.getItem('braindefense_users') || '{}');
-            if (users[lastUser] && users[lastUser].data) {
+            // FIX: Try exact match first, then lowercase match
+            const userRecord = users[lastUser] || users[lastUser.toLowerCase()];
+            
+            if (userRecord && userRecord.data) {
                 console.log(`[AutoLogin] Loading data for ${lastUser}`);
-                return restoreState(users[lastUser].data);
+                return restoreState(userRecord.data);
             }
         } catch(e) {
             console.error("Error loading user data", e);
@@ -155,11 +160,11 @@ const App: React.FC = () => {
   const [showDailyRewards, setShowDailyRewards] = useState(false);
   const [showRewardSelector, setShowRewardSelector] = useState(false);
   const [incomingInvite, setIncomingInvite] = useState<{ matchId: string; sender: string; level: number } | null>(null);
+  const [waitingForHostMatchId, setWaitingForHostMatchId] = useState<string | null>(null);
   
-  // Account State - Synchronous Init to prevent Auth Screen flash
+  // Account State
   const [currentUser, setCurrentUser] = useState<string | null>(() => {
       const user = localStorage.getItem('braindefense_last_user');
-      console.log(`[Init] Current User: ${user}`);
       return user;
   });
 
@@ -167,7 +172,7 @@ const App: React.FC = () => {
   const [showFriends, setShowFriends] = useState(false);
   
   // Network Status
-  const [isOnline, setIsOnline] = useState(false);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
 
   // Multiplayer State
   const [multiplayerMatch, setMultiplayerMatch] = useState<MultiplayerMatchState>({
@@ -175,7 +180,7 @@ const App: React.FC = () => {
       matchId: '',
       role: 'HOST'
   });
-  // Used when I am the host waiting for a friend
+  
   const [activeInviteMatchId, setActiveInviteMatchId] = useState<string | undefined>(undefined);
   
   // Backup Modal State
@@ -189,6 +194,10 @@ const App: React.FC = () => {
   const mainContainerRef = useRef<HTMLDivElement>(null);
   const mailboxEventSource = useRef<EventSource | null>(null);
   const inviteMatchListenerRef = useRef<EventSource | null>(null);
+  const waitingPollRef = useRef<any>(null); // Changed to any to avoid NodeJS.Timeout issues in web
+  
+  // Deduplication Ref (Initialized safely)
+  const processedMsgIds = useRef(new Set<string>());
 
   // --- Pull to Refresh Logic ---
   const [pullY, setPullY] = useState(0);
@@ -196,7 +205,6 @@ const App: React.FC = () => {
   const PULL_THRESHOLD = 120;
 
   const handleTouchStart = (e: React.TouchEvent) => {
-    // Only pull if at top
     if (mainContainerRef.current && mainContainerRef.current.scrollTop > 5) return;
     touchStartRef.current = e.touches[0].clientY;
   };
@@ -223,7 +231,6 @@ const App: React.FC = () => {
 
   // --- SESSION RECOVERY EFFECT ---
   useEffect(() => {
-    // Session Recovery (Check if user was in a game)
     setTimeout(() => {
         const activeSession = localStorage.getItem('bd_active_session');
         if (activeSession) {
@@ -231,10 +238,8 @@ const App: React.FC = () => {
                 const sessionData = JSON.parse(activeSession);
                 console.log("Found active session, recovering...", sessionData);
                 
-                // Restore Game Config
                 setCurrentStageIndex(sessionData.stageIndex);
                 
-                // Restore Multiplayer State if applicable
                 if (sessionData.isMultiplayer) {
                     setMultiplayerMatch(sessionData.multiplayerState);
                 } else {
@@ -244,30 +249,48 @@ const App: React.FC = () => {
                 setNotification("SESSION RESTORED!");
                 setTimeout(() => setNotification(null), 2000);
                 
-                // Force Navigation to Game
                 setScreen(ScreenState.GAME);
                 
             } catch (e) {
                 console.error("Failed to recover session", e);
-                localStorage.removeItem('bd_active_session'); // Corrupt, clear it
+                localStorage.removeItem('bd_active_session'); 
             }
         }
     }, 500);
 
+    return () => {
+        if (waitingPollRef.current) clearInterval(waitingPollRef.current);
+    }
   }, []);
 
   // --- CENTRAL MAILBOX PROCESSING LOGIC ---
-  const processMailboxPayload = (payload: any) => {
+  const processMailboxPayload = (payload: any, msgId: string) => {
       if (!payload) return;
+      if (processedMsgIds.current.has(msgId)) return; // Deduplicate
+      processedMsgIds.current.add(msgId); // Mark as processed
       
-      console.log("Processing Mailbox Payload:", payload);
+      // FIX: Robust Parsing for different ntfy payloads
+      let data = payload;
+      // Ensure data is an object if it was sent as a JSON string
+      if (typeof payload === 'string') {
+          try {
+              data = JSON.parse(payload);
+          } catch(e) {
+              // If it's a plain string message, ignore or handle differently
+              return;
+          }
+      }
 
-      // Deduplication Check (Simple)
-      // For Friend Requests, we check if ID is already in requests or friends
-      if (payload.type === 'FRIEND_REQUEST' && payload.sender) {
-          const senderId = payload.sender;
+      console.log("Processing Mailbox Payload:", data);
+
+      if (data.type === 'FRIEND_REQUEST' && data.sender) {
+          const senderId = data.sender;
           setGameState(prev => {
-              if (prev.friends.includes(senderId) || prev.friendRequests.includes(senderId)) return prev;
+              // FIX: Case-insensitive check to avoid duplicate issues
+              const alreadyFriend = prev.friends.some(f => f.toUpperCase() === senderId.toUpperCase());
+              const alreadyRequested = prev.friendRequests.some(r => r.toUpperCase() === senderId.toUpperCase());
+              
+              if (alreadyFriend || alreadyRequested) return prev;
               
               setNotification(`NEW FRIEND REQUEST: ${senderId}`);
               setTimeout(() => setNotification(null), 5000);
@@ -279,11 +302,11 @@ const App: React.FC = () => {
           });
       }
 
-      // Handle Request Accepted
-      if (payload.type === 'FRIEND_ACCEPTED' && payload.sender) {
-            const senderId = payload.sender;
+      if (data.type === 'FRIEND_ACCEPTED' && data.sender) {
+            const senderId = data.sender;
             setGameState(prev => {
-              if (prev.friends.includes(senderId)) return prev;
+              const alreadyFriend = prev.friends.some(f => f.toUpperCase() === senderId.toUpperCase());
+              if (alreadyFriend) return prev;
               
               setNotification(`${senderId} ACCEPTED YOUR REQUEST!`);
               setTimeout(() => setNotification(null), 5000);
@@ -295,25 +318,56 @@ const App: React.FC = () => {
           });
       }
 
-      // Handle Request Rejected
-      if (payload.type === 'FRIEND_REJECTED' && payload.sender) {
-          const senderId = payload.sender;
+      if (data.type === 'FRIEND_REJECTED' && data.sender) {
+          const senderId = data.sender;
           setNotification(`${senderId} DECLINED YOUR REQUEST.`);
           setTimeout(() => setNotification(null), 3000);
       }
 
-      // Handle Game Invite
-      if (payload.type === 'GAME_INVITE' && payload.matchId && payload.sender) {
-          // Avoid spamming notifications for the same invite
+      if (data.type === 'GAME_INVITE' && data.matchId && data.sender) {
+          if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
           setIncomingInvite(prev => {
-              if (prev && prev.matchId === payload.matchId) return prev;
-              // Muted logic for now, but state updates
+              if (prev && prev.matchId === data.matchId) return prev;
               return {
-                  matchId: payload.matchId,
-                  sender: payload.sender,
-                  level: payload.level || 1
+                  matchId: data.matchId,
+                  sender: data.sender,
+                  level: data.level || 1
               };
           });
+      }
+
+      // --- NEW: GLOBAL CHAT RECEIVER ---
+      if (data.type === 'CHAT' && data.sender && data.text) {
+          const senderId = data.sender;
+          const msg = { 
+              sender: senderId, 
+              text: data.text, 
+              timestamp: data.timestamp || Date.now() 
+          };
+          
+          setGameState(prev => {
+              const prevChats = prev.chats || {};
+              const conversation = prevChats[senderId] || [];
+              // Prevent duplicates by timestamp
+              if (conversation.some(c => c.timestamp === msg.timestamp)) return prev;
+              
+              const newConversation = [...conversation, msg].sort((a,b) => a.timestamp - b.timestamp);
+              
+              return {
+                  ...prev,
+                  chats: {
+                      ...prevChats,
+                      [senderId]: newConversation
+                  }
+              };
+          });
+
+          // Only notify if we aren't already looking at friends
+          if (!showFriends) {
+              setNotification(`MSG FROM ${senderId}`);
+              if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+              setTimeout(() => setNotification(null), 4000);
+          }
       }
   };
 
@@ -321,13 +375,15 @@ const App: React.FC = () => {
   const checkMailboxOnce = async (silent = false) => {
       if (!gameState.playerId) return;
       const safeId = gameState.playerId.toUpperCase().replace(/[^A-Z0-9_]/g, '');
-      const topic = `bd_net_v3_${safeId}`;
+      const topic = `bd_net_v4_${safeId}`; 
       
       try {
-          // Cache busting with time + no-store to force real fetch
           const res = await fetch(`https://ntfy.sh/${topic}/json?since=1h&t=${Date.now()}`, {
               cache: 'no-store'
           });
+          
+          if (res.ok) setIsOnline(true);
+
           const text = await res.text();
           
           if (!text) {
@@ -339,14 +395,13 @@ const App: React.FC = () => {
           let found = 0;
           lines.forEach(line => {
               try {
-                  const data = JSON.parse(line);
+                  const data = JSON.parse(line); 
+                  if (data.id && processedMsgIds.current.has(data.id)) return;
+
                   if (data.event === 'message') {
                       let payload = data.message;
-                      if (typeof payload === 'string' && (payload.startsWith('{') || payload.startsWith('['))) {
-                          try { payload = JSON.parse(payload); } catch(e) {}
-                      }
-                      if (payload && typeof payload === 'object') {
-                          processMailboxPayload(payload);
+                      if (payload && data.id) {
+                          processMailboxPayload(payload, data.id);
                           found++;
                       }
                   }
@@ -366,23 +421,24 @@ const App: React.FC = () => {
     if (!gameState.playerId) return;
 
     const safeId = gameState.playerId.toUpperCase().replace(/[^A-Z0-9_]/g, '');
-    const mailboxTopic = `bd_net_v3_${safeId}`;
+    const mailboxTopic = `bd_net_v4_${safeId}`; 
     
     if (mailboxEventSource.current) {
         mailboxEventSource.current.close();
     }
     
     console.log(`Subscribing to mailbox: ${mailboxTopic}`);
-    const es = new EventSource(`https://ntfy.sh/${mailboxTopic}/sse`);
+    // FIX: Add 'since=1h' to SSE url to catch missed messages on reconnect immediately
+    const es = new EventSource(`https://ntfy.sh/${mailboxTopic}/sse?since=1h&t=${Date.now()}`);
 
     es.onopen = () => {
         setIsOnline(true);
-        console.log("Mailbox Connected");
     };
 
     es.onerror = (e) => {
-        setIsOnline(false);
-        // Don't close immediately, let it try to reconnect or let the interval handle it
+        if (!navigator.onLine) {
+            setIsOnline(false);
+        }
     };
 
     es.onmessage = (event) => {
@@ -391,8 +447,13 @@ const App: React.FC = () => {
             const data = JSON.parse(event.data);
             if (data.event === 'keepalive') return;
 
+            if (data.id && processedMsgIds.current.has(data.id)) return;
+
             let payload = data;
+            // Normalize ntfy payload structure
             if (typeof data === 'string') payload = JSON.parse(data);
+            
+            // Check if message is nested
             if (data.message) {
                 if (typeof data.message === 'string' && (data.message.startsWith('{') || data.message.startsWith('['))) {
                     try { payload = JSON.parse(data.message); } catch(e) { payload = data.message; }
@@ -401,13 +462,11 @@ const App: React.FC = () => {
                 }
             }
 
-            if (payload && typeof payload === 'object') {
-                processMailboxPayload(payload);
+            if (payload && data.id) {
+                processMailboxPayload(payload, data.id);
             }
 
-        } catch(e) {
-            // Ignore parse errors
-        }
+        } catch(e) {}
     };
 
     mailboxEventSource.current = es;
@@ -415,37 +474,53 @@ const App: React.FC = () => {
 
   // --- HYBRID CONNECTION EFFECT ---
   useEffect(() => {
+    const handleOnline = () => { setIsOnline(true); checkMailboxOnce(true); connectToMailbox(); };
+    const handleOffline = () => setIsOnline(false);
+    
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
     if (gameState.playerId) {
         connectToMailbox();
         checkMailboxOnce(true);
         
-        // Reconnect Interval (Auto-Heal)
         const interval = setInterval(() => {
             if (!mailboxEventSource.current || mailboxEventSource.current.readyState === EventSource.CLOSED) {
-                console.log("Connection lost, reconnecting...");
-                setIsOnline(false);
                 connectToMailbox();
-            } else if (mailboxEventSource.current.readyState === EventSource.OPEN) {
-                setIsOnline(true);
-            }
-        }, 2000); // Check every 2 seconds
+            } 
+            checkMailboxOnce(true);
+        }, 5000); 
 
         return () => {
             if (mailboxEventSource.current) mailboxEventSource.current.close();
             clearInterval(interval);
+            window.removeEventListener('online', handleOnline);
+            window.removeEventListener('offline', handleOffline);
         };
     }
+    
+    return () => {
+        window.removeEventListener('online', handleOnline);
+        window.removeEventListener('offline', handleOffline);
+    };
   }, [gameState.playerId]);
 
   // --- ACCOUNT LOGIC ---
   const handleLogin = (username: string, data: GameState) => {
     setCurrentUser(username);
     const finalState = restoreState(data);
+    
+    if (finalState.playerId && finalState.playerId.startsWith('GUEST_') && !username.startsWith('Guest_')) {
+        finalState.playerId = null; 
+    }
+
     if (!finalState.playerId) {
         const safeUser = username.toUpperCase().replace(/[^A-Z0-9]/g, '');
         finalState.playerId = `${safeUser}_${Math.floor(Math.random() * 9000) + 1000}`;
     }
+    
     setGameState(finalState);
+    processedMsgIds.current.clear();
     setOwnerModeActive(false); 
     setNotification(`WELCOME, ${username.toUpperCase()}!`);
     setTimeout(() => setNotification(null), 3000);
@@ -466,12 +541,12 @@ const App: React.FC = () => {
     localStorage.removeItem('bd_active_session');
     localStorage.removeItem('bd_game_snapshot');
     setGameState(getDefaultState());
+    processedMsgIds.current.clear(); 
     setNotification("LOGGED OUT");
     setTimeout(() => setNotification(null), 2000);
     setScreen(ScreenState.AUTH);
   };
 
-  // --- ADMIN POWERS & STATE OVERRIDE ---
   const isOwner = currentUser === OWNER_USER;
   const effectiveGameState: GameState = (isOwner && ownerModeActive) ? {
     ...gameState,
@@ -483,19 +558,22 @@ const App: React.FC = () => {
 
   // --- FRIEND LOGIC ---
   const handleSendRequest = async (targetId: string): Promise<boolean> => {
-      // NOTE: Kept for logic, but UI will block access
       const safeTarget = targetId.toUpperCase().replace(/[^A-Z0-9_]/g, '');
-      const topic = `bd_net_v3_${safeTarget}`;
+      const topic = `bd_net_v4_${safeTarget}`; 
       const payload = {
           type: 'FRIEND_REQUEST',
           sender: gameState.playerId 
       };
       
-      console.log(`Sending Friend Request to ${topic}`, payload);
-
       try {
+        // FIX: Removed unnecessary Content-Type header to let ntfy handle raw payload
+        // Added Priority header for better delivery handling
         await fetch(`https://ntfy.sh/${topic}`, {
             method: 'POST',
+            headers: {
+                'Priority': 'high',
+                'Title': 'Friend Request'
+            },
             body: JSON.stringify(payload)
         });
         return true;
@@ -513,7 +591,7 @@ const App: React.FC = () => {
           friendRequests: prev.friendRequests.filter(id => id !== senderId)
       }));
       const safeSender = senderId.toUpperCase().replace(/[^A-Z0-9_]/g, '');
-      const topic = `bd_net_v3_${safeSender}`;
+      const topic = `bd_net_v4_${safeSender}`;
       const payload = {
           type: 'FRIEND_ACCEPTED',
           sender: gameState.playerId
@@ -521,6 +599,7 @@ const App: React.FC = () => {
       try {
         await fetch(`https://ntfy.sh/${topic}`, {
             method: 'POST',
+            headers: { 'Priority': 'high' },
             body: JSON.stringify(payload)
         });
       } catch (e) {}
@@ -533,7 +612,7 @@ const App: React.FC = () => {
       }));
       if (!gameState.playerId) return;
       const safeSender = senderId.toUpperCase().replace(/[^A-Z0-9_]/g, '');
-      const topic = `bd_net_v3_${safeSender}`;
+      const topic = `bd_net_v4_${safeSender}`;
       const payload = {
           type: 'FRIEND_REJECTED',
           sender: gameState.playerId
@@ -553,12 +632,51 @@ const App: React.FC = () => {
     }));
   };
 
+  // --- SEND CHAT LOGIC (Centralized in App.tsx) ---
+  const handleSendChatMessage = async (targetId: string, text: string) => {
+      if (!gameState.playerId) return;
+
+      const timestamp = Date.now();
+      const msg = { sender: gameState.playerId, text, timestamp };
+
+      // 1. Update Local History Immediately
+      setGameState(prev => {
+          const prevChats = prev.chats || {};
+          const conversation = prevChats[targetId] || [];
+          return {
+              ...prev,
+              chats: {
+                  ...prevChats,
+                  [targetId]: [...conversation, msg]
+              }
+          };
+      });
+
+      // 2. Send to Target's Global Mailbox
+      const safeTarget = targetId.toUpperCase().replace(/[^A-Z0-9_]/g, '');
+      const topic = `bd_net_v4_${safeTarget}`;
+      try {
+          await fetch(`https://ntfy.sh/${topic}`, {
+              method: 'POST',
+              headers: { 'Priority': 'default' },
+              body: JSON.stringify({
+                  type: 'CHAT',
+                  sender: gameState.playerId,
+                  text: text,
+                  timestamp: timestamp
+              })
+          });
+      } catch (e) {
+          setNotification("MSG FAILED TO SEND");
+      }
+  };
+
   // --- GAME INVITE LOGIC ---
   const handleInviteToGame = async (friendId: string) => {
       if (!gameState.playerId) return;
       const matchId = `bd_match_${gameState.playerId}_${friendId}_${Date.now()}`;
       const safeFriend = friendId.toUpperCase().replace(/[^A-Z0-9_]/g, '');
-      const topic = `bd_net_v3_${safeFriend}`;
+      const topic = `bd_net_v4_${safeFriend}`;
       const payload = {
           type: 'GAME_INVITE',
           sender: gameState.playerId,
@@ -568,6 +686,7 @@ const App: React.FC = () => {
       try {
           await fetch(`https://ntfy.sh/${topic}`, {
               method: 'POST',
+              headers: { 'Priority': 'high', 'Title': 'Game Invite' },
               body: JSON.stringify(payload)
           });
           setShowFriends(false); 
@@ -589,25 +708,107 @@ const App: React.FC = () => {
       try {
           await fetch(`https://ntfy.sh/${incomingInvite.matchId}`, {
               method: 'POST',
+              headers: { 'Priority': 'high' },
               body: JSON.stringify(payload)
           });
-          setNotification("WAITING FOR HOST TO START...");
           setIncomingInvite(null); 
+          // Show Waiting Screen
+          setWaitingForHostMatchId(incomingInvite.matchId);
+
           if (inviteMatchListenerRef.current) inviteMatchListenerRef.current.close();
           const es = new EventSource(`https://ntfy.sh/${incomingInvite.matchId}/sse?since=10m&t=${Date.now()}`);
+          
+          const handleStartMessage = (data: any) => {
+              const msg = typeof data === 'string' ? JSON.parse(data) : data.message ? (typeof data.message === 'string' ? JSON.parse(data.message) : data.message) : data;
+              if (msg && msg.type === 'HOST_START_CONFIRM' && msg.seed) {
+                  es.close();
+                  if (waitingPollRef.current) clearInterval(waitingPollRef.current);
+                  setWaitingForHostMatchId(null);
+                  startMultiplayerLevel(msg.level, incomingInvite.matchId, 'CLIENT', msg.seed);
+                  return true;
+              }
+              return false;
+          };
+
           es.onmessage = (event) => {
               try {
                   const data = JSON.parse(event.data);
-                  const msg = typeof data === 'string' ? JSON.parse(data) : data.message ? JSON.parse(data.message) : data;
-                  if (msg.type === 'HOST_START_CONFIRM' && msg.seed) {
-                      es.close();
-                      startMultiplayerLevel(msg.level, incomingInvite.matchId, 'CLIENT', msg.seed);
-                  }
+                  handleStartMessage(data);
               } catch(e) {}
           };
           inviteMatchListenerRef.current = es;
+
+          // --- RELIABILITY POLL ---
+          // Poll every 2 seconds to ensure we catch the start signal
+          if (waitingPollRef.current) clearInterval(waitingPollRef.current);
+          waitingPollRef.current = setInterval(async () => {
+             try {
+                 // ADDED TIMESTAMP TO PREVENT CACHING &poll=1 to trigger fresh check
+                 const res = await fetch(`https://ntfy.sh/${incomingInvite.matchId}/json?since=2m&poll=1&t=${Date.now()}`);
+                 const text = await res.text();
+                 const lines = text.split('\n');
+                 for(const line of lines) {
+                     if(!line) continue;
+                     try {
+                         const data = JSON.parse(line);
+                         if (handleStartMessage(data)) {
+                             break;
+                         }
+                     } catch(e) {}
+                 }
+             } catch(e) {}
+          }, 2000);
+
       } catch (e) {
           console.error("Failed to accept invite", e);
+      }
+  };
+
+  const manualCheckStart = async () => {
+      if (!waitingForHostMatchId) return;
+      setNotification("CHECKING STATUS...");
+      try {
+          // ADDED TIMESTAMP TO PREVENT CACHING
+          const res = await fetch(`https://ntfy.sh/${waitingForHostMatchId}/json?since=10m&t=${Date.now()}`);
+          const text = await res.text();
+          const lines = text.split('\n');
+          for(const line of lines) {
+              if(!line) continue;
+              try {
+                  const data = JSON.parse(line);
+                  const msg = data.message ? (typeof data.message === 'string' ? JSON.parse(data.message) : data.message) : data;
+                  if (msg && msg.type === 'HOST_START_CONFIRM' && msg.seed) {
+                      if (inviteMatchListenerRef.current) inviteMatchListenerRef.current.close();
+                      if (waitingPollRef.current) clearInterval(waitingPollRef.current);
+                      setWaitingForHostMatchId(null);
+                      startMultiplayerLevel(msg.level, waitingForHostMatchId, 'CLIENT', msg.seed);
+                      return;
+                  }
+              } catch(e) {}
+          }
+          setNotification("STILL WAITING...");
+          setTimeout(() => setNotification(null), 1000);
+      } catch(e) {
+          setNotification("CONNECTION ERROR");
+          setTimeout(() => setNotification(null), 2000);
+      }
+  };
+
+  const rejectIncomingInvite = async () => {
+      if (!incomingInvite || !gameState.playerId) return;
+      try {
+          await fetch(`https://ntfy.sh/${incomingInvite.matchId}`, {
+              method: 'POST',
+              body: JSON.stringify({
+                  type: 'MATCH_REJECT',
+                  sender: gameState.playerId
+              })
+          });
+          setIncomingInvite(null);
+          setNotification("INVITE DECLINED");
+      } catch (e) {
+          console.error("Failed to reject", e);
+          setIncomingInvite(null);
       }
   };
 
@@ -652,8 +853,17 @@ const App: React.FC = () => {
              try {
                  const storedUsers = localStorage.getItem('braindefense_users');
                  const users = storedUsers ? JSON.parse(storedUsers) : {};
-                 if (!users[currentUser]) users[currentUser] = { data: gameState };
-                 users[currentUser].data = gameState;
+                 
+                 // FIX: Normalize key to lowercase to avoid case-sensitivity issues
+                 const userKey = currentUser.toLowerCase();
+                 
+                 if (!users[userKey]) {
+                     // Ensure we don't crash if record missing, but keep old logic if needed
+                     // Note: We might be missing the password here if we just created it blindly
+                     users[userKey] = { data: gameState, password: 'unknown' }; 
+                 }
+                 
+                 users[userKey].data = gameState;
                  localStorage.setItem('braindefense_users', JSON.stringify(users));
              } catch(e) {
                  if ((e as any).name === 'QuotaExceededError') {
@@ -910,7 +1120,23 @@ const App: React.FC = () => {
   const manualSave = () => {
     try {
       localStorage.setItem('braindefense_save', JSON.stringify(gameState));
-      setNotification("GAME SAVED TO DEVICE!");
+      
+      // Force Account Update if logged in
+      if (currentUser && currentUser !== OWNER_USER && !currentUser.startsWith('Guest')) {
+          const storedUsers = localStorage.getItem('braindefense_users');
+          const users = storedUsers ? JSON.parse(storedUsers) : {};
+          
+          if (users[currentUser]) {
+              users[currentUser].data = gameState;
+              localStorage.setItem('braindefense_users', JSON.stringify(users));
+              setNotification("CLOUD SAVE SUCCESSFUL!");
+          } else {
+               setNotification("ACCOUNT ERROR: PLEASE RE-LOGIN");
+          }
+      } else {
+          setNotification("GAME SAVED TO DEVICE!");
+      }
+      
       setTimeout(() => setNotification(null), 2000);
     } catch (error) {
       setNotification("SAVE FAILED!");
@@ -1117,7 +1343,11 @@ const App: React.FC = () => {
     );
   };
 
-  const renderMenu = () => (
+  const renderMenu = () => {
+    // FIX: Allow all users (including guests) to access friends
+    const canAccessFriends = !!gameState.playerId;
+
+    return (
     <div 
       ref={mainContainerRef}
       className="w-full h-full overflow-y-auto bg-gradient-to-b from-purple-900 to-black relative no-scrollbar"
@@ -1125,7 +1355,6 @@ const App: React.FC = () => {
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
     >
-       {/* Ensure AccountSystem is visible in Menu */}
        <AccountSystem 
           key="menu-account"
           currentUser={currentUser}
@@ -1135,7 +1364,6 @@ const App: React.FC = () => {
           onUpdateGameState={handleUpdateGameState}
        />
 
-      {/* Scroll Arrows for Menu */}
       <div className="fixed bottom-20 right-4 z-[60] flex flex-col gap-4 pointer-events-auto">
         <button 
           onClick={() => scrollMenu('up')}
@@ -1151,7 +1379,6 @@ const App: React.FC = () => {
         </button>
       </div>
 
-      {/* PULL INDICATOR OVERLAY */}
       <div 
         className="absolute top-0 left-0 w-full bg-gradient-to-b from-yellow-600 to-purple-900 z-50 overflow-hidden flex flex-col items-center justify-end shadow-xl border-b-4 border-yellow-400"
         style={{ 
@@ -1180,7 +1407,6 @@ const App: React.FC = () => {
             </div>
         )}
 
-        {/* OWNER POWERS BUTTON (ONLY VISIBLE TO OWNER) */}
         {isOwner && (
             <div className="w-full max-w-sm md:max-w-md mb-8">
                 <Button 
@@ -1204,9 +1430,8 @@ const App: React.FC = () => {
             <Button variant="secondary" onClick={() => setScreen(ScreenState.INVENTORY)}>INVENTORY</Button>
             <Button variant="secondary" onClick={() => setScreen(ScreenState.STORE)}>STORE</Button>
             
-            {/* NEW FRIENDS BUTTON */}
             <Button 
-               variant={gameState.playerId ? "secondary" : "locked"} 
+               variant={canAccessFriends ? "secondary" : "locked"} 
                onClick={() => {
                  if (!gameState.playerId) {
                     setNotification("LOGIN REQUIRED FOR FRIENDS!");
@@ -1217,7 +1442,7 @@ const App: React.FC = () => {
                }} 
                className="flex items-center justify-center gap-2 relative"
             >
-               {gameState.playerId ? <Users size={24} /> : <Lock size={24} />} 
+               {canAccessFriends ? <Users size={24} /> : <Lock size={24} />} 
                FRIENDS
                {gameState.playerId && gameState.friendRequests?.length > 0 && (
                    <span className="absolute -top-1 -right-1 bg-red-600 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs animate-bounce border-2 border-white">
@@ -1228,7 +1453,6 @@ const App: React.FC = () => {
             
             <Button variant="secondary" onClick={() => setScreen(ScreenState.GAME_MODES)}>GAME MODES</Button>
             
-            {/* UPDATES BUTTON */}
             <Button variant="secondary" onClick={() => setScreen(ScreenState.UPDATES)} className="flex items-center justify-center gap-2">
                 <Bell size={20} /> UPDATES
             </Button>
@@ -1239,12 +1463,12 @@ const App: React.FC = () => {
 
       </div>
       
-      {/* VERSION DISPLAY (Fixed Bottom Right) */}
       <div className="fixed bottom-2 right-2 z-[100] text-white/40 font-mono text-[10px] pointer-events-none bg-black/50 px-2 rounded">
             v2.7.0 (John Pork)
       </div>
     </div>
   );
+  }
 
   const renderContent = () => {
     if (screen === ScreenState.LOADING) {
@@ -1366,7 +1590,6 @@ const App: React.FC = () => {
           equippedCharacters={gameState.equippedCharacters}
           onGameOver={handleStageComplete}
           onExit={() => {
-              // Clear Session
               localStorage.removeItem('bd_active_session');
               localStorage.removeItem('bd_game_snapshot');
               setMultiplayerMatch({ isActive: false, matchId: '', role: 'HOST' });
@@ -1405,16 +1628,13 @@ const App: React.FC = () => {
        );
     }
 
-    // Default: MENU
     return renderMenu();
   };
 
   return (
     <div className="w-full h-full relative overflow-hidden bg-black">
-        {/* RENDER ACTIVE SCREEN */}
         {renderContent()}
 
-        {/* GLOBAL OVERLAYS */}
         {notification && (
             <div className="fixed top-8 z-[200] animate-bounce w-full flex justify-center px-4 pointer-events-none">
                 <div className="bg-green-600 text-white px-6 py-3 rounded-lg border-2 border-green-400 font-chaotic text-xl md:text-2xl shadow-lg flex items-center gap-2 text-center">
@@ -1424,15 +1644,83 @@ const App: React.FC = () => {
             </div>
         )}
 
-        {/* GAME INVITE OVERLAY */}
+        {/* --- INVITATION MODAL --- */}
         {incomingInvite && (
-            <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[200] bg-indigo-900 border-4 border-cyan-500 rounded-xl p-4 shadow-2xl animate-bounce">
-                <div className="flex flex-col items-center gap-2">
-                    <h3 className="text-cyan-400 font-chaotic text-xl">GAME INVITE!</h3>
-                    <p className="text-white text-sm">FROM: {incomingInvite.sender}</p>
-                    <div className="flex gap-2 mt-2">
-                        <Button onClick={acceptIncomingInvite} className="py-1 px-4 text-sm bg-green-600">ACCEPT</Button>
-                        <Button variant="danger" onClick={() => setIncomingInvite(null)} className="py-1 px-4 text-sm">IGNORE</Button>
+            <div className="fixed inset-0 z-[250] flex items-center justify-center bg-black/80 backdrop-blur-md animate-in fade-in zoom-in-95 p-4">
+                <div className="bg-gray-900 border-4 border-cyan-500 rounded-2xl w-full max-w-md p-8 relative overflow-hidden shadow-[0_0_50px_rgba(6,182,212,0.3)] flex flex-col items-center text-center">
+                    
+                    {/* Animated Scanline Background */}
+                    <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-10 pointer-events-none"></div>
+                    <div className="absolute top-0 left-0 w-full h-1 bg-cyan-400/50 shadow-[0_0_10px_#22d3ee] animate-[scan_2s_linear_infinite] pointer-events-none"></div>
+
+                    <div className="mb-6 relative">
+                        <div className="absolute inset-0 bg-cyan-500 blur-2xl opacity-20 animate-pulse"></div>
+                        <Sword size={64} className="text-cyan-400 animate-bounce relative z-10" />
+                    </div>
+
+                    <h2 className="text-4xl font-chaotic text-white mb-2 tracking-wide">INCOMING DUEL</h2>
+                    <p className="text-gray-400 font-mono text-sm mb-8 bg-black/50 px-4 py-2 rounded border border-gray-700">
+                        INVITATION FROM: <span className="text-cyan-400 font-bold">{incomingInvite.sender}</span>
+                    </p>
+
+                    <div className="flex flex-col w-full gap-4">
+                        <Button 
+                            onClick={acceptIncomingInvite} 
+                            className="w-full py-4 text-xl bg-green-600 hover:bg-green-500 border-green-400 shadow-[0_0_15px_rgba(34,197,94,0.4)]"
+                        >
+                            ACCEPT CHALLENGE
+                        </Button>
+                        <Button 
+                            variant="danger" 
+                            onClick={() => {
+                                // Added Reject Logic
+                                const reject = async () => {
+                                    if (!incomingInvite || !gameState.playerId) return;
+                                    try {
+                                        await fetch(`https://ntfy.sh/${incomingInvite.matchId}`, {
+                                            method: 'POST',
+                                            body: JSON.stringify({
+                                                type: 'MATCH_REJECT',
+                                                sender: gameState.playerId
+                                            })
+                                        });
+                                    } catch (e) {}
+                                    setIncomingInvite(null);
+                                    setNotification("INVITE DECLINED");
+                                };
+                                reject();
+                            }} 
+                            className="w-full py-3 text-lg bg-red-900/50 hover:bg-red-800 border-red-700"
+                        >
+                            DECLINE
+                        </Button>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {/* --- CLIENT WAITING FOR HOST OVERLAY --- */}
+        {waitingForHostMatchId && (
+            <div className="fixed inset-0 z-[250] flex items-center justify-center bg-black/90 backdrop-blur-xl animate-in fade-in p-4">
+                <div className="text-center relative">
+                    <Loader2 size={80} className="text-purple-500 animate-spin mx-auto mb-8" />
+                    <h2 className="text-4xl md:text-6xl font-spooky text-white mb-4 animate-pulse">
+                        WAITING FOR HOST
+                    </h2>
+                    <p className="text-gray-400 font-mono text-sm md:text-lg mb-8">
+                        HOST IS SELECTING THE BATTLEFIELD...
+                    </p>
+                    <div className="flex flex-col items-center gap-4">
+                        <div className="bg-purple-900/30 border border-purple-500/50 px-6 py-2 rounded-full text-purple-300 text-xs font-mono tracking-widest">
+                            SIGNAL LOCKED
+                        </div>
+                        
+                        <button 
+                            onClick={manualCheckStart}
+                            className="flex items-center gap-2 text-xs text-white/50 hover:text-white border border-white/20 hover:border-white/50 px-4 py-2 rounded transition-colors"
+                        >
+                            <RefreshCw size={12} /> FORCE START CHECK
+                        </button>
                     </div>
                 </div>
             </div>
@@ -1466,6 +1754,9 @@ const App: React.FC = () => {
               onClose={() => setShowFriends(false)}
               onRefresh={checkMailboxOnce}
               isOnline={isOnline}
+              chats={gameState.chats} // Passing persistent chats
+              onSendChatMessage={handleSendChatMessage} // Passing global sender
+              onManualSave={manualSave}
            />
         )}
     </div>

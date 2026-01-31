@@ -49,6 +49,12 @@ export interface LevelConfig {
   startingMoney: number;
 }
 
+export interface ChatMessage {
+  sender: string;
+  text: string;
+  timestamp: number;
+}
+
 export interface GameState {
   brainCoins: number;
   playerId: string | null; // Null if not logged in/guest
@@ -66,6 +72,7 @@ export interface GameState {
   temporaryUnlocks: Record<string, number>;
   friends: string[]; // List of added Player IDs
   friendRequests: string[]; // List of IDs who sent a request
+  chats: Record<string, ChatMessage[]>; // Persistent Chat History
   // Profile
   nickname?: string;
   profilePicture?: string; // Base64 string

@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import Button from './Button';
-import { ArrowLeft, Users, Globe, Search, UserPlus, Loader2, Sword, CheckCircle, Lock, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Users, Globe, Search, UserPlus, Loader2, Sword, CheckCircle, Lock, AlertTriangle, Cpu, Network, Wifi, ScanLine, XCircle, RefreshCw } from 'lucide-react';
 import { STAGES } from '../constants';
 
 interface MultiplayerLobbyProps {
@@ -21,6 +21,9 @@ const MultiplayerLobby: React.FC<MultiplayerLobbyProps> = ({ myPlayerId, onBack,
   const [log, setLog] = useState<string[]>([]);
   const [guestCompletedLevels, setGuestCompletedLevels] = useState<number[]>([]);
   const [hostLevelWarning, setHostLevelWarning] = useState<string | null>(null);
+  
+  // New State for Rejection Handling
+  const [waitingStatus, setWaitingStatus] = useState<'WAITING' | 'REJECTED'>('WAITING');
 
   const searchEventSource = useRef<EventSource | null>(null);
   const isSearchingRef = useRef(false);
@@ -29,6 +32,7 @@ const MultiplayerLobby: React.FC<MultiplayerLobbyProps> = ({ myPlayerId, onBack,
       // If we are passed an initialMatchId (e.g. from an invite we sent), go straight to WAITING_FRIEND
       if (initialMatchId) {
           setView('WAITING_FRIEND');
+          setWaitingStatus('WAITING');
       }
   }, [initialMatchId]);
 
@@ -42,30 +46,76 @@ const MultiplayerLobby: React.FC<MultiplayerLobbyProps> = ({ myPlayerId, onBack,
 
   // --- WAITING FOR FRIEND LOGIC (HOST SIDE) ---
   useEffect(() => {
-      if (view === 'WAITING_FRIEND' && initialMatchId) {
+      if (view === 'WAITING_FRIEND' && initialMatchId && waitingStatus === 'WAITING') {
           console.log(`Waiting for friend on match: ${initialMatchId}`);
           
-          // FIX: Added 'since=10m' and cache buster 't' to prevent stale connection on mobile
+          const handleMessageData = (data: any) => {
+              let msg = data;
+              // Robust Parsing
+              if (typeof data === 'string') {
+                  try { msg = JSON.parse(data); } catch(e) {}
+              } else if (data.message) {
+                  if (typeof data.message === 'string') {
+                      try { msg = JSON.parse(data.message); } catch(e) { msg = data.message; }
+                  } else {
+                      msg = data.message;
+                  }
+              }
+
+              if (msg && msg.type === 'MATCH_ACCEPT') {
+                  console.log("Friend Accepted!", msg);
+                  setGuestCompletedLevels(msg.completedLevels || []);
+                  setView('HOST_LEVEL_SELECT');
+                  return true; // Handled
+              } else if (msg && msg.type === 'MATCH_REJECT') {
+                  console.log("Friend Rejected!");
+                  setWaitingStatus('REJECTED');
+                  return true; // Handled
+              }
+              return false;
+          };
+
+          // 1. REAL-TIME LISTENER (SSE)
           const es = new EventSource(`https://ntfy.sh/${initialMatchId}/sse?since=10m&t=${Date.now()}`);
           es.onmessage = (event) => {
               try {
                   const data = JSON.parse(event.data);
-                  const msg = typeof data === 'string' ? JSON.parse(data) : data.message ? JSON.parse(data.message) : data;
-                  
-                  if (msg.type === 'MATCH_ACCEPT') {
-                      // Friend accepted! 
-                      // STORE GUEST PROGRESS
-                      setGuestCompletedLevels(msg.completedLevels || []);
-                      
-                      // Transition to Host Level Select
-                      setView('HOST_LEVEL_SELECT');
+                  if (handleMessageData(data)) {
                       es.close();
                   }
               } catch(e) {}
           };
-          return () => es.close();
+
+          // 2. POLLING FALLBACK (Reliability)
+          // Checks every 3 seconds in case SSE fails or misses the event
+          const pollInterval = setInterval(async () => {
+              try {
+                  const res = await fetch(`https://ntfy.sh/${initialMatchId}/json?since=5m&poll=1`);
+                  if (!res.ok) return;
+                  const text = await res.text();
+                  const lines = text.split('\n').filter(line => line.trim() !== '');
+                  
+                  for (const line of lines) {
+                      try {
+                          const data = JSON.parse(line);
+                          if (handleMessageData(data)) {
+                              es.close();
+                              clearInterval(pollInterval);
+                              break;
+                          }
+                      } catch(e) {}
+                  }
+              } catch(e) {
+                  console.error("Poll failed", e);
+              }
+          }, 3000);
+
+          return () => {
+              es.close();
+              clearInterval(pollInterval);
+          };
       }
-  }, [view, initialMatchId]);
+  }, [view, initialMatchId, waitingStatus]);
 
   // --- REAL MATCHMAKING LOGIC (PUBLIC SEARCH) ---
   useEffect(() => {
@@ -165,31 +215,39 @@ const MultiplayerLobby: React.FC<MultiplayerLobbyProps> = ({ myPlayerId, onBack,
   const handleHostStartLevel = (levelId: number) => {
       setHostLevelWarning(null);
       
-      // Validation: Does Host have it? (Should be covered by UI lock, but safe check)
+      // Validation: Does Host have it?
       const isLockedForHost = levelId === 2 && !completedLevels.includes(1);
       if (isLockedForHost) return;
 
       // Validation: Does Guest have it?
+      // Level 2 requires completion of Level 1
       const isLockedForGuest = levelId === 2 && !guestCompletedLevels.includes(1);
       
       if (isLockedForGuest) {
-          setHostLevelWarning("FRIEND HAS NOT UNLOCKED LEVEL 2");
+          setHostLevelWarning("PARTNER INELIGIBLE: THEY MUST COMPLETE LEVEL 1 FIRST");
           return;
       }
 
       // Valid - Start Game
       const seed = Date.now();
       
-      // Notify Client
+      // Notify Client - TWICE for Reliability
       if (initialMatchId) {
-          fetch(`https://ntfy.sh/${initialMatchId}`, {
-                method: 'POST',
-                body: JSON.stringify({
-                    type: 'HOST_START_CONFIRM',
-                    seed: seed,
-                    level: levelId
-                })
-          });
+          const sendStart = () => {
+              fetch(`https://ntfy.sh/${initialMatchId}`, {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        type: 'HOST_START_CONFIRM',
+                        seed: seed,
+                        level: levelId
+                    })
+              }).catch(() => {});
+          };
+          
+          sendStart();
+          // Redundancy: Send again after 1s just in case
+          setTimeout(sendStart, 1000);
+
           onStartMatch(levelId, initialMatchId, 'HOST', seed);
       }
   };
@@ -205,58 +263,100 @@ const MultiplayerLobby: React.FC<MultiplayerLobbyProps> = ({ myPlayerId, onBack,
       return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // --- SUB-COMPONENTS ---
+  const forceCheckStatus = async () => {
+      if (initialMatchId) {
+          try {
+              // Trigger a manual poll check essentially by re-fetching
+              // The logic inside useEffect will handle it, but we can also do a direct check here
+              const res = await fetch(`https://ntfy.sh/${initialMatchId}/json?since=10m`);
+              const text = await res.text();
+              const lines = text.split('\n');
+              for (const line of lines) {
+                  if (line.includes('MATCH_ACCEPT')) {
+                      // Force view update if found
+                      // Extract completed levels if possible, simplified here
+                      const data = JSON.parse(line);
+                      let msg = data.message;
+                      if (typeof msg === 'string') try { msg = JSON.parse(msg); } catch(e){}
+                      
+                      setGuestCompletedLevels(msg.completedLevels || []);
+                      setView('HOST_LEVEL_SELECT');
+                      return;
+                  }
+              }
+              alert("Still waiting... (No accept signal found)");
+          } catch(e) {
+              alert("Connection Error. Check internet.");
+          }
+      }
+  };
+
+  // --- SUB-COMPONENTS (FUTURISTIC STYLE) ---
 
   const renderLevelSelector = () => (
-      <div className="flex flex-col items-center w-full max-w-4xl animate-in fade-in slide-in-from-bottom-8">
-          <h2 className="text-4xl md:text-5xl font-spooky text-cyan-400 mb-8 text-center">SELECT OPERATION</h2>
+      <div className="flex flex-col items-center w-full max-w-4xl animate-in fade-in zoom-in-95 duration-300">
+          <h2 className="text-4xl md:text-5xl font-mono text-cyan-400 mb-8 text-center tracking-tighter">SELECT OPERATION</h2>
           
           <div className="flex flex-wrap justify-center gap-6 mb-8">
             {/* Level 1 */}
             <button 
                 onClick={() => handleSelectLevel(1)}
-                className="w-48 h-64 bg-green-900 border-4 border-green-500 rounded-xl flex flex-col items-center justify-center hover:scale-105 transition-transform shadow-[0_0_20px_rgba(34,197,94,0.3)] hover:bg-green-800"
+                className="w-48 h-64 bg-black/40 border border-green-500/50 hover:border-green-400 rounded-lg flex flex-col items-center justify-center hover:scale-105 transition-all shadow-[0_0_30px_rgba(34,197,94,0.2)] group relative overflow-hidden"
             >
-                <div className="text-6xl font-chaotic text-white mb-2">1</div>
-                <div className="text-xl font-bold text-green-200">THE FOREST</div>
-                <div className="text-xs bg-black/40 px-2 py-1 rounded mt-2 text-green-400">CO-OP READY</div>
+                <div className="absolute inset-0 bg-green-500/5 group-hover:bg-green-500/10 transition-colors"></div>
+                <div className="text-6xl font-chaotic text-green-500 mb-2 drop-shadow-[0_0_10px_rgba(34,197,94,0.8)]">1</div>
+                <div className="text-xl font-bold text-green-200 font-mono">THE FOREST</div>
+                <div className="mt-4 flex items-center gap-1 text-[10px] text-green-400 bg-green-900/30 px-2 py-1 rounded border border-green-500/30">
+                    <Wifi size={10} className="animate-pulse"/> SIGNAL STRONG
+                </div>
             </button>
 
             {/* Level 2 */}
             <button 
                 onClick={() => completedLevels.includes(1) && handleSelectLevel(2)}
                 className={`
-                    w-48 h-64 border-4 rounded-xl flex flex-col items-center justify-center transition-transform relative
+                    w-48 h-64 border rounded-lg flex flex-col items-center justify-center transition-all relative group overflow-hidden
                     ${completedLevels.includes(1) 
-                        ? 'bg-cyan-900 border-cyan-500 hover:scale-105 hover:bg-cyan-800 shadow-[0_0_20px_rgba(6,182,212,0.3)] cursor-pointer' 
-                        : 'bg-gray-800 border-gray-600 opacity-60 cursor-not-allowed'}
+                        ? 'bg-black/40 border-cyan-500/50 hover:border-cyan-400 hover:scale-105 hover:shadow-[0_0_30px_rgba(6,182,212,0.2)] cursor-pointer' 
+                        : 'bg-black/60 border-gray-700 opacity-60 cursor-not-allowed'}
                 `}
             >
-                {!completedLevels.includes(1) && <Lock size={48} className="text-gray-400 mb-2"/>}
-                <div className="text-6xl font-chaotic text-white mb-2">2</div>
-                <div className="text-xl font-bold text-cyan-200">DARK ICE</div>
-                {completedLevels.includes(1) && <div className="text-xs bg-black/40 px-2 py-1 rounded mt-2 text-cyan-400">CO-OP READY</div>}
+                <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-10"></div>
+                {!completedLevels.includes(1) && <Lock size={48} className="text-gray-500 mb-2"/>}
+                <div className="text-6xl font-chaotic text-cyan-500 mb-2 drop-shadow-[0_0_10px_rgba(6,182,212,0.8)]">2</div>
+                <div className="text-xl font-bold text-cyan-200 font-mono">DARK ICE</div>
+                {completedLevels.includes(1) && (
+                    <div className="mt-4 flex items-center gap-1 text-[10px] text-cyan-400 bg-cyan-900/30 px-2 py-1 rounded border border-cyan-500/30">
+                        <Wifi size={10} className="animate-pulse"/> SIGNAL STRONG
+                    </div>
+                )}
             </button>
           </div>
 
-          <Button variant="secondary" onClick={() => setView('HOME')}>CANCEL</Button>
+          <Button variant="secondary" onClick={() => setView('HOME')} className="border-gray-600 bg-gray-800 hover:bg-gray-700 text-sm">ABORT</Button>
       </div>
   );
 
   const renderHostLevelSelect = () => {
       const isLevel2LockedForHost = !completedLevels.includes(1);
-      // We check if 1 is in guestCompletedLevels to see if they unlocked 2
-      // Actually, standard logic: to play level 2, must beat level 1.
       const isLevel2LockedForGuest = !guestCompletedLevels.includes(1);
 
       return (
         <div className="flex flex-col items-center w-full max-w-4xl animate-in fade-in slide-in-from-bottom-8">
-            <h2 className="text-4xl md:text-5xl font-spooky text-yellow-400 mb-2 text-center">PARTY ASSEMBLED</h2>
-            <p className="text-purple-300 font-chaotic text-xl mb-8">SELECT MISSION FOR THE SQUAD</p>
+            <div className="bg-cyan-900/20 border border-cyan-500/50 px-8 py-4 rounded-full mb-8 flex items-center gap-3">
+                <Users className="text-cyan-400" />
+                <span className="text-cyan-200 font-mono tracking-widest text-lg">SQUAD LINK ESTABLISHED</span>
+            </div>
+            
+            <p className="text-purple-300 font-mono text-sm mb-8 animate-pulse text-center">
+                // WAITING FOR HOST COMMAND...<br/>
+                // SELECT MISSION PROTOCOL
+            </p>
             
             {hostLevelWarning && (
-                <div className="bg-red-900/90 border-2 border-red-500 text-white px-6 py-3 rounded-lg mb-6 flex items-center gap-2 animate-bounce">
-                    <AlertTriangle size={24} /> {hostLevelWarning}
+                <div className="bg-red-900/80 border border-red-500 text-red-200 px-6 py-4 rounded-lg mb-8 flex items-center gap-4 animate-bounce shadow-[0_0_20px_rgba(239,68,68,0.4)] max-w-md text-center">
+                    <AlertTriangle size={32} className="flex-shrink-0" /> 
+                    <span className="font-mono font-bold text-sm">{hostLevelWarning}</span>
                 </div>
             )}
 
@@ -264,11 +364,13 @@ const MultiplayerLobby: React.FC<MultiplayerLobbyProps> = ({ myPlayerId, onBack,
                 {/* Level 1 */}
                 <button 
                     onClick={() => handleHostStartLevel(1)}
-                    className="w-48 h-64 bg-green-900 border-4 border-green-500 rounded-xl flex flex-col items-center justify-center hover:scale-105 transition-transform shadow-[0_0_20px_rgba(34,197,94,0.3)] hover:bg-green-800"
+                    className="w-48 h-64 bg-green-900/20 border border-green-500 hover:bg-green-900/40 rounded-xl flex flex-col items-center justify-center hover:scale-105 transition-all shadow-[0_0_30px_rgba(34,197,94,0.1)] group"
                 >
-                    <div className="text-6xl font-chaotic text-white mb-2">1</div>
-                    <div className="text-xl font-bold text-green-200">THE FOREST</div>
-                    <div className="text-xs bg-black/40 px-2 py-1 rounded mt-2 text-green-400">AVAILABLE</div>
+                    <div className="text-6xl font-chaotic text-green-500 mb-2 group-hover:drop-shadow-[0_0_15px_rgba(34,197,94,1)] transition-all">1</div>
+                    <div className="text-xl font-bold text-green-200 font-mono">THE FOREST</div>
+                    <div className="text-xs bg-green-900/50 px-2 py-1 rounded mt-4 text-green-400 border border-green-500/30">
+                        STATUS: READY
+                    </div>
                 </button>
 
                 {/* Level 2 */}
@@ -276,68 +378,74 @@ const MultiplayerLobby: React.FC<MultiplayerLobbyProps> = ({ myPlayerId, onBack,
                     onClick={() => handleHostStartLevel(2)}
                     disabled={isLevel2LockedForHost}
                     className={`
-                        w-48 h-64 border-4 rounded-xl flex flex-col items-center justify-center transition-transform relative
+                        w-48 h-64 border rounded-xl flex flex-col items-center justify-center transition-all relative overflow-hidden
                         ${isLevel2LockedForHost 
-                            ? 'bg-gray-800 border-gray-600 opacity-60 cursor-not-allowed' 
-                            : 'bg-cyan-900 border-cyan-500 hover:scale-105 hover:bg-cyan-800 shadow-[0_0_20px_rgba(6,182,212,0.3)] cursor-pointer'}
+                            ? 'bg-gray-900 border-gray-700 opacity-50 cursor-not-allowed' 
+                            : 'bg-cyan-900/20 border-cyan-500 hover:bg-cyan-900/40 hover:scale-105 cursor-pointer shadow-[0_0_30px_rgba(6,182,212,0.1)]'}
                     `}
                 >
-                    {isLevel2LockedForHost && <Lock size={48} className="text-gray-400 mb-2"/>}
-                    <div className="text-6xl font-chaotic text-white mb-2">2</div>
-                    <div className="text-xl font-bold text-cyan-200">DARK ICE</div>
+                    {isLevel2LockedForHost && <Lock size={48} className="text-gray-600 mb-2"/>}
+                    <div className="text-6xl font-chaotic text-cyan-500 mb-2">2</div>
+                    <div className="text-xl font-bold text-cyan-200 font-mono">DARK ICE</div>
                     
                     {/* Status Badge */}
                     {!isLevel2LockedForHost && (
-                        <div className={`text-xs px-2 py-1 rounded mt-2 font-bold flex items-center gap-1 ${isLevel2LockedForGuest ? 'bg-red-900 text-red-200' : 'bg-black/40 text-cyan-400'}`}>
-                            {isLevel2LockedForGuest ? <><Lock size={10}/> GUEST LOCKED</> : 'AVAILABLE'}
+                        <div className={`mt-4 text-xs px-2 py-1 rounded font-bold font-mono border flex items-center gap-2 ${isLevel2LockedForGuest ? 'bg-red-900/50 text-red-400 border-red-500' : 'bg-cyan-900/50 text-cyan-400 border-cyan-500'}`}>
+                            {isLevel2LockedForGuest ? <><Lock size={10}/> LOCKED BY ALLY</> : 'STATUS: READY'}
                         </div>
                     )}
                 </button>
             </div>
 
-            <Button variant="secondary" onClick={() => setView('HOME')}>ABORT MISSION</Button>
+            <Button variant="secondary" onClick={() => setView('HOME')} className="text-sm bg-red-900/50 border-red-800 hover:bg-red-800">DISCONNECT SQUAD</Button>
         </div>
       );
   };
 
   const renderSearching = () => (
-      <div className="bg-black/60 border-4 border-cyan-500 rounded-2xl p-8 md:p-12 flex flex-col items-center shadow-[0_0_50px_rgba(6,182,212,0.2)] animate-in zoom-in w-full max-w-lg">
-        <div className="relative">
-            <Loader2 size={80} className="text-cyan-400 animate-spin mb-6" />
-            <div className="absolute inset-0 flex items-center justify-center">
-                <Globe size={32} className="text-white animate-pulse" />
-            </div>
+      <div className="bg-black/80 border border-cyan-500/50 rounded-2xl p-8 md:p-12 flex flex-col items-center shadow-[0_0_100px_rgba(6,182,212,0.1)] animate-in zoom-in w-full max-w-lg relative overflow-hidden backdrop-blur-xl">
+        
+        {/* Animated Scanline */}
+        <div className="absolute top-0 left-0 w-full h-1 bg-cyan-400/50 shadow-[0_0_10px_#22d3ee] animate-[scan_2s_linear_infinite]"></div>
+
+        <div className="relative mb-8">
+            <div className="absolute inset-0 bg-cyan-500 blur-2xl opacity-20 animate-pulse"></div>
+            <Network size={80} className="text-cyan-400 animate-pulse relative z-10" />
         </div>
         
-        <h3 className="text-3xl font-chaotic text-white mb-2 text-center">SCANNING FREQUENCIES...</h3>
-        <p className="text-cyan-300 font-mono text-xl mb-4">{formatTime(searchTime)}</p>
+        <h3 className="text-3xl font-mono text-white mb-2 text-center tracking-widest">SCANNING_NET.V4</h3>
+        <p className="text-cyan-500 font-mono text-xl mb-6">{formatTime(searchTime)}</p>
         
-        <div className="w-full bg-black/50 p-4 rounded-lg border border-gray-700 h-32 overflow-y-auto font-mono text-xs text-green-400 mb-6 space-y-1">
-            {log.map((line, i) => <div key={i}>&gt; {line}</div>)}
-            <div className="animate-pulse">&gt; _</div>
+        <div className="w-full bg-black/90 p-4 rounded border border-cyan-900 h-40 overflow-y-auto font-mono text-[10px] text-green-400 mb-6 space-y-1 shadow-inner custom-scrollbar">
+            {log.map((line, i) => <div key={i} className="opacity-80">&gt; {line}</div>)}
+            <div className="animate-pulse text-cyan-400">&gt; _</div>
         </div>
 
-        <Button variant="danger" onClick={handleCancel} className="px-8">CANCEL SEARCH</Button>
+        <Button variant="danger" onClick={handleCancel} className="px-8 border-red-600 bg-red-900/20 hover:bg-red-900/50">ABORT SEARCH</Button>
     </div>
   );
 
   return (
-    <div className="h-full w-full bg-slate-900 relative overflow-hidden flex flex-col">
-      {/* Background - Darker, less overwhelming purple */}
-      <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-20 pointer-events-none z-0"></div>
-      <div className="absolute inset-0 bg-gradient-to-b from-black via-gray-900 to-purple-950 opacity-90 z-0"></div>
+    <div className="h-full w-full bg-[#050510] relative overflow-hidden flex flex-col font-sans">
+      
+      {/* Background - Cyberpunk Grid */}
+      <div className="absolute inset-0 bg-[linear-gradient(rgba(0,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(0,255,255,0.03)_1px,transparent_1px)] bg-[size:40px_40px] perspective-1000 transform-gpu pointer-events-none"></div>
+      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-black/50 to-black pointer-events-none"></div>
 
       {/* Header */}
-      <div className="relative z-10 flex justify-between items-center p-4 md:p-6 bg-black/40 backdrop-blur-md border-b border-indigo-500">
-        <Button variant="secondary" onClick={onBack} className="flex items-center gap-2 text-sm md:text-xl">
-          <ArrowLeft size={20} /> EXIT LOBBY
+      <div className="relative z-10 flex justify-between items-center p-4 md:p-6 border-b border-cyan-900/50 bg-black/40 backdrop-blur-md">
+        <Button variant="secondary" onClick={onBack} className="flex items-center gap-2 text-xs md:text-sm bg-transparent border-gray-700 hover:bg-gray-800">
+          <ArrowLeft size={16} /> DISCONNECT
         </Button>
         <div className="flex flex-col items-end">
-            <div className="text-green-400 font-mono text-xs md:text-sm flex items-center gap-2 animate-pulse">
-                <span className="w-2 h-2 bg-green-500 rounded-full"></span>
-                {onlineCount.toLocaleString()} PLAYERS ONLINE
+            <div className="text-cyan-500 font-mono text-xs flex items-center gap-2">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-500"></span>
+                </span>
+                NET.V4 ONLINE
             </div>
-            <div className="text-white/30 text-[10px]">ID: {myPlayerId}</div>
+            <div className="text-gray-500 font-mono text-[10px]">{onlineCount.toLocaleString()} NODES ACTIVE</div>
         </div>
       </div>
 
@@ -345,61 +453,86 @@ const MultiplayerLobby: React.FC<MultiplayerLobbyProps> = ({ myPlayerId, onBack,
       <div className="flex-1 flex flex-col items-center justify-center relative z-10 p-4">
         
         {view === 'HOME' && (
-            <>
-                <h2 className="text-5xl md:text-7xl font-spooky text-cyan-400 mb-2 drop-shadow-[0_0_15px_rgba(6,182,212,0.6)] text-center">
-                    MULTIPLAYER ZONE
-                </h2>
-                <div className="flex items-center gap-2 bg-red-900/50 text-red-200 px-4 py-1 rounded mb-8 border border-red-500">
-                    <AlertTriangle size={16}/> <span className="text-sm font-bold">REAL-TIME BETA</span>
+            <div className="w-full max-w-5xl flex flex-col items-center">
+                <div className="mb-12 text-center">
+                    <h2 className="text-5xl md:text-8xl font-chaotic text-transparent bg-clip-text bg-gradient-to-b from-cyan-300 to-blue-600 mb-2 drop-shadow-[0_0_25px_rgba(6,182,212,0.4)]">
+                        MULTIPLAYER
+                    </h2>
+                    <div className="inline-flex items-center gap-2 bg-blue-900/20 border border-blue-500/30 px-4 py-1 rounded-full">
+                        <Cpu size={14} className="text-blue-400"/>
+                        <span className="text-blue-200 text-xs font-mono tracking-widest">SYSTEM READY // ID: {myPlayerId}</span>
+                    </div>
                 </div>
 
-                <div className="flex flex-col md:flex-row gap-8 w-full max-w-4xl">
+                <div className="flex flex-col md:flex-row gap-6 w-full px-4">
                     
                     {/* SEARCH MATCH OPTION */}
                     <button 
                         onClick={() => setView('LEVEL_SELECT')}
-                        className="flex-1 bg-indigo-900/50 border-4 border-indigo-500 hover:bg-indigo-800 hover:border-cyan-400 hover:scale-105 transition-all rounded-2xl p-8 flex flex-col items-center group relative overflow-hidden"
+                        className="flex-1 bg-gradient-to-br from-gray-900 to-black border border-cyan-900 hover:border-cyan-400 rounded-xl p-8 flex flex-col items-center group relative overflow-hidden transition-all duration-300 hover:shadow-[0_0_40px_rgba(6,182,212,0.15)]"
                     >
-                        <div className="absolute inset-0 bg-cyan-500/10 opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                        <div className="bg-black/50 p-6 rounded-full mb-6 border-2 border-indigo-400 group-hover:border-cyan-400 transition-colors">
-                            <Globe size={48} className="text-indigo-300 group-hover:text-cyan-300" />
+                        <div className="absolute inset-0 bg-cyan-500/5 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                        <div className="bg-cyan-900/20 p-6 rounded-full mb-6 border border-cyan-500/30 group-hover:scale-110 transition-transform duration-300">
+                            <Globe size={48} className="text-cyan-400" />
                         </div>
-                        <h3 className="text-3xl md:text-4xl font-chaotic text-white mb-2">SEARCH MATCH</h3>
-                        <p className="text-indigo-200 text-center text-sm md:text-base">
-                            Find a REAL player online.
-                            <br/><span className="text-green-400 font-bold">LIVE CONNECTION</span>
+                        <h3 className="text-2xl font-mono text-white mb-2 group-hover:text-cyan-300 transition-colors">PUBLIC MATCH</h3>
+                        <p className="text-gray-500 text-center text-sm font-mono group-hover:text-gray-400">
+                            Scan network for random ally.
                         </p>
                     </button>
 
                     {/* PLAY WITH FRIEND OPTION */}
                     <button 
                         onClick={onInviteFriends}
-                        className="flex-1 bg-purple-900/50 border-4 border-purple-500 hover:bg-purple-800 hover:border-pink-400 hover:scale-105 transition-all rounded-2xl p-8 flex flex-col items-center group relative overflow-hidden"
+                        className="flex-1 bg-gradient-to-br from-gray-900 to-black border border-purple-900 hover:border-purple-400 rounded-xl p-8 flex flex-col items-center group relative overflow-hidden transition-all duration-300 hover:shadow-[0_0_40px_rgba(168,85,247,0.15)]"
                     >
-                        <div className="absolute inset-0 bg-pink-500/10 opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                        <div className="bg-black/50 p-6 rounded-full mb-6 border-2 border-purple-400 group-hover:border-pink-400 transition-colors">
-                            <Users size={48} className="text-purple-300 group-hover:text-pink-300" />
+                        <div className="absolute inset-0 bg-purple-500/5 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                        <div className="bg-purple-900/20 p-6 rounded-full mb-6 border border-purple-500/30 group-hover:scale-110 transition-transform duration-300">
+                            <Users size={48} className="text-purple-400" />
                         </div>
-                        <h3 className="text-3xl md:text-4xl font-chaotic text-white mb-2">INVITE FRIEND</h3>
-                        <p className="text-purple-200 text-center text-sm md:text-base">
-                            Use your Friend List.
-                            <br/><span className="text-pink-300 font-bold">PRIVATE LOBBY</span>
+                        <h3 className="text-2xl font-mono text-white mb-2 group-hover:text-purple-300 transition-colors">PRIVATE LOBBY</h3>
+                        <p className="text-gray-500 text-center text-sm font-mono group-hover:text-gray-400">
+                            Establish secure link with friend.
                         </p>
                     </button>
 
                 </div>
-            </>
+            </div>
         )}
 
         {view === 'LEVEL_SELECT' && renderLevelSelector()}
         {view === 'SEARCHING' && renderSearching()}
         {view === 'HOST_LEVEL_SELECT' && renderHostLevelSelect()}
         {view === 'WAITING_FRIEND' && (
-            <div className="bg-purple-900/50 border-4 border-purple-500 rounded-2xl p-8 max-w-md text-center animate-in zoom-in">
-                <Loader2 size={48} className="text-purple-300 animate-spin mx-auto mb-4" />
-                <h3 className="text-2xl font-chaotic text-white mb-4">WAITING FOR FRIEND...</h3>
-                <p className="text-gray-300 text-sm mb-6">Invitation Sent. Waiting for acceptance...</p>
-                <Button variant="secondary" onClick={() => { setView('HOME'); /* Need a way to cancel invite technically */ }}>CANCEL</Button>
+            <div className={`
+                bg-black/80 border rounded-2xl p-12 max-w-md text-center animate-in zoom-in backdrop-blur-xl shadow-[0_0_50px_rgba(168,85,247,0.1)] relative overflow-hidden transition-all duration-300
+                ${waitingStatus === 'REJECTED' ? 'border-red-500/50' : 'border-purple-500/50'}
+            `}>
+                <div className={`absolute top-0 left-0 w-full h-1 ${waitingStatus === 'REJECTED' ? 'bg-red-500' : 'bg-purple-500/50 animate-pulse'}`}></div>
+                
+                {waitingStatus === 'WAITING' ? (
+                    <>
+                        <Loader2 size={64} className="text-purple-400 animate-spin mx-auto mb-6" />
+                        <h3 className="text-2xl font-mono text-white mb-2">AWAITING HANDSHAKE...</h3>
+                        <p className="text-gray-400 text-xs font-mono mb-8">Invitation Protocol Sent. Stand by.</p>
+                        <button 
+                            onClick={forceCheckStatus} 
+                            className="text-[10px] text-purple-400 hover:text-white flex items-center justify-center gap-1 mx-auto mb-4 border border-purple-700 px-3 py-1 rounded hover:bg-purple-900"
+                        >
+                            <RefreshCw size={10} /> CHECK STATUS
+                        </button>
+                    </>
+                ) : (
+                    <>
+                        <XCircle size={64} className="text-red-500 mx-auto mb-6 animate-pulse" />
+                        <h3 className="text-2xl font-mono text-white mb-2">CONNECTION REJECTED</h3>
+                        <p className="text-red-400 text-xs font-mono mb-8">Target declined the neural link.</p>
+                    </>
+                )}
+
+                <Button variant="secondary" onClick={() => { setView('HOME'); }} className="w-full bg-gray-800 border-gray-600 hover:bg-gray-700">
+                    {waitingStatus === 'REJECTED' ? 'RETURN TO BASE' : 'CANCEL'}
+                </Button>
             </div>
         )}
 

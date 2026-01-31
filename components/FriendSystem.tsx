@@ -1,31 +1,31 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Users, MessageSquare, Copy, UserPlus, X, Send, ChevronLeft, Mail, Check, Ban, Gamepad2, Loader2, RefreshCw, Search, Shield, Wifi, WifiOff } from 'lucide-react';
+import { Users, MessageSquare, Copy, UserPlus, X, Send, ChevronLeft, Mail, Check, Ban, Gamepad2, Loader2, RefreshCw, Search, Shield, Wifi, Save } from 'lucide-react';
+import { ChatMessage } from '../types';
 
 interface FriendSystemProps {
   myPlayerId: string;
   friends: string[];
   friendRequests: string[];
+  chats: Record<string, ChatMessage[]>; // Received from App state
+  onSendChatMessage: (targetId: string, text: string) => Promise<void>; // Action from App
   onSendRequest: (targetId: string) => Promise<boolean>;
   onAcceptRequest: (targetId: string) => void;
   onRejectRequest: (targetId: string) => void;
   onRemoveFriend: (id: string) => void;
   onInviteToGame: (friendId: string) => void; 
   onClose: () => void;
-  onRefresh?: () => void; 
-  isOnline?: boolean; // New prop for status
-}
-
-interface ChatMessage {
-  sender: string;
-  text: string;
-  timestamp: number;
+  onRefresh?: () => void;
+  onManualSave: () => void; // New prop for manual saving
+  isOnline?: boolean;
 }
 
 const FriendSystem: React.FC<FriendSystemProps> = ({ 
   myPlayerId, 
   friends, 
   friendRequests, 
+  chats,
+  onSendChatMessage,
   onSendRequest, 
   onAcceptRequest, 
   onRejectRequest, 
@@ -33,6 +33,7 @@ const FriendSystem: React.FC<FriendSystemProps> = ({
   onInviteToGame,
   onClose,
   onRefresh,
+  onManualSave,
   isOnline = false
 }) => {
   // Navigation State
@@ -44,13 +45,11 @@ const FriendSystem: React.FC<FriendSystemProps> = ({
   const [addIdInput, setAddIdInput] = useState('');
   const [chatInput, setChatInput] = useState('');
   
-  // Data States
-  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  // UI States
   const [isProcessing, setIsProcessing] = useState(false);
   const [toast, setToast] = useState<{msg: string, type: 'success' | 'error' | 'info'} | null>(null);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
 
   // --- Helpers ---
   const showToast = (msg: string, type: 'success' | 'error' | 'info') => {
@@ -58,38 +57,19 @@ const FriendSystem: React.FC<FriendSystemProps> = ({
     setTimeout(() => setToast(null), 3000);
   };
 
-  const getChatTopic = (id1: string, id2: string) => {
-    const sorted = [id1.toUpperCase(), id2.toUpperCase()].sort();
-    return `bd_chat_v2_${sorted[0]}_${sorted[1]}`;
-  };
+  const currentChatHistory = selectedFriend ? (chats[selectedFriend] || []) : [];
 
-  // --- Chat Logic ---
-  useEffect(() => {
-    if (chatMode && selectedFriend) {
-      const topic = getChatTopic(myPlayerId, selectedFriend);
-      if (eventSourceRef.current) eventSourceRef.current.close();
-
-      const es = new EventSource(`https://ntfy.sh/${topic}/sse?since=1h&t=${Date.now()}`);
-      es.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          let payload = data.message ? (typeof data.message === 'string' ? JSON.parse(data.message) : data.message) : data;
-          if (payload && payload.text && payload.sender) {
-             setChatHistory(prev => {
-                if (prev.some(m => m.timestamp === payload.timestamp && m.sender === payload.sender)) return prev;
-                return [...prev, payload].sort((a, b) => a.timestamp - b.timestamp);
-             });
-          }
-        } catch (e) {}
-      };
-      eventSourceRef.current = es;
-      return () => es.close();
-    }
-  }, [chatMode, selectedFriend, myPlayerId]);
-
+  // Scroll to bottom when history updates
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatHistory, chatMode]);
+  }, [currentChatHistory, chatMode]);
+
+  // AUTO-REFRESH ON MOUNT
+  useEffect(() => {
+     if (onRefresh) {
+         onRefresh();
+     }
+  }, []);
 
   // --- Actions ---
   const handleCopyId = () => {
@@ -98,7 +78,8 @@ const FriendSystem: React.FC<FriendSystemProps> = ({
   };
 
   const handleSendRequestAction = async () => {
-    const target = addIdInput.trim().toUpperCase();
+    const target = addIdInput.trim().toUpperCase().replace(/\s/g, '');
+    
     if (!target) return;
     if (target === myPlayerId) { showToast("CANNOT ADD YOURSELF", 'error'); return; }
     if (friends.includes(target)) { showToast("ALREADY FRIENDS", 'info'); return; }
@@ -119,17 +100,14 @@ const FriendSystem: React.FC<FriendSystemProps> = ({
     }
   };
 
-  const handleSendMessage = async () => {
+  const handleSendMessageAction = async () => {
     if (!chatInput.trim() || !selectedFriend) return;
-    const topic = getChatTopic(myPlayerId, selectedFriend);
-    const payload: ChatMessage = { sender: myPlayerId, text: chatInput.trim(), timestamp: Date.now() };
     
-    // Optimistic UI Update
-    setChatHistory(prev => [...prev, payload]);
-    setChatInput('');
-
+    const text = chatInput.trim();
+    setChatInput(''); // Clear input immediately
+    
     try {
-        await fetch(`https://ntfy.sh/${topic}`, { method: 'POST', body: JSON.stringify(payload) });
+        await onSendChatMessage(selectedFriend, text);
     } catch {
         showToast("MSG FAILED TO SEND", 'error');
     }
@@ -200,7 +178,7 @@ const FriendSystem: React.FC<FriendSystemProps> = ({
                    </div>
                    <div>
                        <div className="text-xs text-cyan-500 font-mono tracking-widest flex items-center gap-1">
-                          SOCIAL UPLINK 
+                          NET.V4
                           <span className={`text-[9px] border px-1 rounded flex items-center gap-1 ${isOnline ? 'text-green-500 border-green-500' : 'text-red-500 border-red-500'}`}>
                               {isOnline ? 'ONLINE' : 'OFFLINE'}
                           </span>
@@ -235,15 +213,27 @@ const FriendSystem: React.FC<FriendSystemProps> = ({
                         </div>
                     </div>
 
-                    {/* Refresh Header */}
+                    {/* ACTIONS ROW (Refresh + SAVE) */}
                     <div className="px-4 flex justify-between items-center mb-2">
                         <span className="text-xs text-gray-500 font-bold uppercase tracking-widest">CONNECTIONS ({friends.length})</span>
-                        <button 
-                            onClick={() => { if(onRefresh) onRefresh(); showToast("CHECKING NETWORK...", 'info'); }} 
-                            className="flex items-center gap-1 text-gray-500 hover:text-white transition-colors bg-white/5 px-2 py-1 rounded text-[10px]"
-                        >
-                            <RefreshCw size={12} className={!isOnline ? "animate-spin" : ""} /> FORCE SYNC
-                        </button>
+                        
+                        <div className="flex gap-2">
+                             {/* SAVE BUTTON */}
+                             <button 
+                                onClick={onManualSave}
+                                className="flex items-center gap-1 text-green-400 hover:text-white transition-colors bg-green-900/30 border border-green-500/50 hover:bg-green-600/50 px-2 py-1 rounded text-[10px]"
+                                title="Force Save to Cloud"
+                             >
+                                <Save size={12} /> SAVE CLOUD
+                             </button>
+
+                             <button 
+                                onClick={() => { if(onRefresh) onRefresh(); showToast("FORCE SYNCING...", 'info'); }} 
+                                className="flex items-center gap-1 text-gray-500 hover:text-white transition-colors bg-white/5 px-2 py-1 rounded text-[10px]"
+                             >
+                                <RefreshCw size={12} className={!isOnline ? "animate-spin" : ""} /> FORCE SYNC
+                             </button>
+                        </div>
                     </div>
 
                     {/* Friend List */}
@@ -261,6 +251,7 @@ const FriendSystem: React.FC<FriendSystemProps> = ({
                                             {fid.charAt(0)}
                                         </div>
                                         <span className="text-gray-200 font-mono text-sm truncate">{fid}</span>
+                                        {/* Unread Indicator Logic Could Be Added Here */}
                                     </div>
                                     <div className="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
                                         <button 
@@ -306,7 +297,7 @@ const FriendSystem: React.FC<FriendSystemProps> = ({
                                 <Mail size={48} className="mb-2 opacity-20" />
                                 <p className="text-sm font-mono">MAILBOX EMPTY</p>
                                 <button onClick={() => { if(onRefresh) onRefresh(); }} className="mt-4 text-xs text-blue-400 hover:underline">
-                                    Check for new messages
+                                    Force Sync
                                 </button>
                              </div>
                         ) : (
@@ -345,9 +336,9 @@ const FriendSystem: React.FC<FriendSystemProps> = ({
                         <input 
                             type="text" 
                             value={addIdInput}
-                            onChange={(e) => setAddIdInput(e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, ''))}
+                            onChange={(e) => setAddIdInput(e.target.value.toUpperCase())}
                             placeholder="PLAYER_ID_0000"
-                            className="w-full bg-black/50 border-2 border-gray-700 focus:border-cyan-500 rounded-xl py-4 pl-4 pr-12 text-white font-mono text-center tracking-wider outline-none transition-colors"
+                            className="w-full bg-black/50 border-2 border-gray-700 focus:border-cyan-500 rounded-xl py-4 pl-4 pr-12 text-white font-mono text-center tracking-wider outline-none transition-colors uppercase"
                         />
                     </div>
 
@@ -369,14 +360,14 @@ const FriendSystem: React.FC<FriendSystemProps> = ({
             {chatMode && selectedFriend && (
                 <div className="flex-1 flex flex-col bg-black/20">
                     <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
-                        {chatHistory.length === 0 && (
+                        {currentChatHistory.length === 0 && (
                             <div className="text-center mt-8">
                                 <div className="inline-block bg-gray-800/50 text-gray-500 text-xs px-3 py-1 rounded-full">
                                     Encrypted connection established.
                                 </div>
                             </div>
                         )}
-                        {chatHistory.map((msg, i) => {
+                        {currentChatHistory.map((msg, i) => {
                             const isMe = msg.sender === myPlayerId;
                             return (
                                 <div key={i} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
@@ -400,11 +391,11 @@ const FriendSystem: React.FC<FriendSystemProps> = ({
                             type="text" 
                             value={chatInput}
                             onChange={(e) => setChatInput(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                            onKeyDown={(e) => e.key === 'Enter' && handleSendMessageAction()}
                             placeholder="Message..."
                             className="flex-1 bg-black/50 border border-gray-700 rounded-xl px-4 text-white focus:outline-none focus:border-cyan-500 text-sm"
                         />
-                        <button onClick={handleSendMessage} className="bg-cyan-600 hover:bg-cyan-500 text-white p-3 rounded-xl transition-colors">
+                        <button onClick={handleSendMessageAction} className="bg-cyan-600 hover:bg-cyan-500 text-white p-3 rounded-xl transition-colors">
                             <Send size={18} />
                         </button>
                     </div>

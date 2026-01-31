@@ -69,6 +69,7 @@ const AccountSystem: React.FC<AccountSystemProps> = ({ currentUser, onLogin, onL
         temporaryUnlocks: {},
         friends: [],
         friendRequests: [],
+        chats: {},
         nickname: '',
         profilePicture: ''
     };
@@ -98,18 +99,21 @@ const AccountSystem: React.FC<AccountSystemProps> = ({ currentUser, onLogin, onL
         users = {};
     }
 
+    // NORMALIZE USERNAME FOR KEY LOOKUP (Case Insensitive)
+    const userKey = trimmedUser.toLowerCase();
+
     if (mode === 'REGISTER') {
-      if (users[trimmedUser]) {
+      if (users[userKey]) {
         setError("Username already in use!");
         return;
       }
       
-      if (trimmedUser.toLowerCase() === OWNER_USER.toLowerCase()) {
+      if (userKey === OWNER_USER.toLowerCase()) {
          setError("Cannot register as Owner. Use Login.");
          return;
       }
 
-      if (trimmedUser.toLowerCase().startsWith('guest')) {
+      if (userKey.startsWith('guest')) {
           setError("Username cannot start with 'Guest'.");
           return;
       }
@@ -123,7 +127,7 @@ const AccountSystem: React.FC<AccountSystemProps> = ({ currentUser, onLogin, onL
         data: { ...currentGameState, playerId: uniqueId }
       };
       
-      users[trimmedUser] = newUser;
+      users[userKey] = newUser;
       
       try {
         localStorage.setItem('braindefense_users', JSON.stringify(users));
@@ -138,9 +142,9 @@ const AccountSystem: React.FC<AccountSystemProps> = ({ currentUser, onLogin, onL
       }
     } 
     else if (mode === 'LOGIN') {
-      if (trimmedUser === OWNER_USER) {
+      if (userKey === OWNER_USER.toLowerCase()) {
         if (password === 'GAMER08101923') {
-           onLogin(trimmedUser, currentGameState);
+           onLogin(OWNER_USER, currentGameState);
            setIsOpen(false);
            return;
         } else {
@@ -149,7 +153,7 @@ const AccountSystem: React.FC<AccountSystemProps> = ({ currentUser, onLogin, onL
         }
       }
 
-      const userRecord = users[trimmedUser];
+      const userRecord = users[userKey];
       if (!userRecord) {
         setError("Account not found. Create one!");
         return;
@@ -225,10 +229,13 @@ const AccountSystem: React.FC<AccountSystemProps> = ({ currentUser, onLogin, onL
              const storedUsers = localStorage.getItem('braindefense_users');
              const users = storedUsers ? JSON.parse(storedUsers) : {};
              
-             // Preserve existing password
-             const existingPassword = users[currentUser]?.password || 'default';
+             const userKey = currentUser.toLowerCase();
              
-             users[currentUser] = { 
+             // Preserve existing password if record exists
+             const existingRecord = users[userKey];
+             const existingPassword = existingRecord?.password || 'default';
+             
+             users[userKey] = { 
                  password: existingPassword,
                  data: newState 
              };
@@ -263,7 +270,7 @@ const AccountSystem: React.FC<AccountSystemProps> = ({ currentUser, onLogin, onL
             const storedUsers = localStorage.getItem('braindefense_users');
             if (storedUsers) {
                 const users = JSON.parse(storedUsers);
-                delete users[currentUser];
+                delete users[currentUser.toLowerCase()];
                 localStorage.setItem('braindefense_users', JSON.stringify(users));
             }
         } catch(e) {}
@@ -506,7 +513,7 @@ const AccountSystem: React.FC<AccountSystemProps> = ({ currentUser, onLogin, onL
                 onClick={handleGuestLogin} 
                 className="w-full py-2 text-base bg-gray-700 border-gray-500 hover:bg-gray-600"
                >
-                 <UserRound size={18} className="inline mr-2"/> PLAY AS GUEST
+                 <UserRound size={18} className="inline mr-2"/> PLAY AS GUEST (FRIENDS ENABLED)
                </Button>
             </div>
             
