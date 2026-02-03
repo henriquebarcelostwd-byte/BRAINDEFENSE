@@ -378,7 +378,8 @@ const App: React.FC = () => {
       const topic = `bd_net_v4_${safeId}`; 
       
       try {
-          const res = await fetch(`https://ntfy.sh/${topic}/json?since=1h&t=${Date.now()}`, {
+          // Changed to since=24h for better offline handling
+          const res = await fetch(`https://ntfy.sh/${topic}/json?since=24h&t=${Date.now()}`, {
               cache: 'no-store'
           });
           
@@ -428,8 +429,8 @@ const App: React.FC = () => {
     }
     
     console.log(`Subscribing to mailbox: ${mailboxTopic}`);
-    // FIX: Add 'since=1h' to SSE url to catch missed messages on reconnect immediately
-    const es = new EventSource(`https://ntfy.sh/${mailboxTopic}/sse?since=1h&t=${Date.now()}`);
+    // FIX: Add 'since=24h' to SSE url to catch missed messages on reconnect immediately
+    const es = new EventSource(`https://ntfy.sh/${mailboxTopic}/sse?since=24h&t=${Date.now()}`);
 
     es.onopen = () => {
         setIsOnline(true);
@@ -560,17 +561,18 @@ const App: React.FC = () => {
   const handleSendRequest = async (targetId: string): Promise<boolean> => {
       const safeTarget = targetId.toUpperCase().replace(/[^A-Z0-9_]/g, '');
       const topic = `bd_net_v4_${safeTarget}`; 
+      console.log(`Sending Friend Request to topic: ${topic}`);
       const payload = {
           type: 'FRIEND_REQUEST',
           sender: gameState.playerId 
       };
       
       try {
-        // FIX: Removed unnecessary Content-Type header to let ntfy handle raw payload
-        // Added Priority header for better delivery handling
+        // FIX: FORCE CONTENT-TYPE TO TEXT/PLAIN TO PREVENT NTFY JSON PARSING
         await fetch(`https://ntfy.sh/${topic}`, {
             method: 'POST',
             headers: {
+                'Content-Type': 'text/plain',
                 'Priority': 'high',
                 'Title': 'Friend Request'
             },
@@ -599,7 +601,10 @@ const App: React.FC = () => {
       try {
         await fetch(`https://ntfy.sh/${topic}`, {
             method: 'POST',
-            headers: { 'Priority': 'high' },
+            headers: { 
+                'Content-Type': 'text/plain',
+                'Priority': 'high' 
+            },
             body: JSON.stringify(payload)
         });
       } catch (e) {}
@@ -620,6 +625,7 @@ const App: React.FC = () => {
       try {
         await fetch(`https://ntfy.sh/${topic}`, {
             method: 'POST',
+            headers: { 'Content-Type': 'text/plain' },
             body: JSON.stringify(payload)
         });
       } catch (e) {}
@@ -658,7 +664,10 @@ const App: React.FC = () => {
       try {
           await fetch(`https://ntfy.sh/${topic}`, {
               method: 'POST',
-              headers: { 'Priority': 'default' },
+              headers: { 
+                  'Content-Type': 'text/plain',
+                  'Priority': 'default' 
+              },
               body: JSON.stringify({
                   type: 'CHAT',
                   sender: gameState.playerId,
@@ -686,7 +695,11 @@ const App: React.FC = () => {
       try {
           await fetch(`https://ntfy.sh/${topic}`, {
               method: 'POST',
-              headers: { 'Priority': 'high', 'Title': 'Game Invite' },
+              headers: { 
+                  'Content-Type': 'text/plain',
+                  'Priority': 'high', 
+                  'Title': 'Game Invite' 
+              },
               body: JSON.stringify(payload)
           });
           setShowFriends(false); 
@@ -708,7 +721,10 @@ const App: React.FC = () => {
       try {
           await fetch(`https://ntfy.sh/${incomingInvite.matchId}`, {
               method: 'POST',
-              headers: { 'Priority': 'high' },
+              headers: { 
+                  'Content-Type': 'text/plain',
+                  'Priority': 'high' 
+              },
               body: JSON.stringify(payload)
           });
           setIncomingInvite(null); 
@@ -799,6 +815,7 @@ const App: React.FC = () => {
       try {
           await fetch(`https://ntfy.sh/${incomingInvite.matchId}`, {
               method: 'POST',
+              headers: { 'Content-Type': 'text/plain' },
               body: JSON.stringify({
                   type: 'MATCH_REJECT',
                   sender: gameState.playerId
@@ -1679,6 +1696,7 @@ const App: React.FC = () => {
                                     try {
                                         await fetch(`https://ntfy.sh/${incomingInvite.matchId}`, {
                                             method: 'POST',
+                                            headers: { 'Content-Type': 'text/plain' },
                                             body: JSON.stringify({
                                                 type: 'MATCH_REJECT',
                                                 sender: gameState.playerId
